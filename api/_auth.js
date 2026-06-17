@@ -1,10 +1,12 @@
 import crypto from "crypto";
+import { CONFIG } from "./_config.js";
 
 // Verifieert het token dat door /api/login is uitgegeven.
-// Gebruikt door /api/chat zodat alleen ingelogde bezoekers Claude kunnen aanroepen.
+// Gebruikt door alle beveiligde endpoints zodat alleen ingelogde bezoekers werken.
+
 export function verifyToken(token) {
   try {
-    const secret = process.env.NOVA_SECRET || process.env.NOVA_PASSWORD || "";
+    const secret = CONFIG.authSecret();
     if (!token || !secret) return false;
     const [data, sig] = token.split(".");
     if (!data || !sig) return false;

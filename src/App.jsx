@@ -8,6 +8,10 @@ const CHAT_URL = "/api/chat";
 const LOGIN_URL = "/api/login";
 const IMPROVE_URL = "/api/improvements";
 const INBOX_URL = "/api/inbox";
+const CATALOG_URL = "/api/catalog";
+const CALENDAR_URL = "/api/calendar";
+const ONBOARDING_URL = "/api/onboarding";
+const WHATSAPP_URL = "/api/whatsapp-send";
 const TOKEN_KEY = "nova_token";
 // Naam voor de begroeting. Stel in via Vercel: VITE_NOVA_NAME (bijv. "Jordi").
 const NOVA_NAME = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_NOVA_NAME) || "";
@@ -36,11 +40,15 @@ function parseReply(raw) {
   let actions = [];
   let task = null;
   let improve = null;
+  let plan = null;
+  let whatsapp = null;
   const kept = [];
   for (const line of lines) {
     const a = line.match(/^\s*ACTIES\s*:\s*(.+)$/i);
     const t = line.match(/^\s*TAAK\s*:\s*(.+)$/i);
     const v = line.match(/^\s*VERBETER\s*:\s*(.+)$/i);
+    const p = line.match(/^\s*PLAN\s*:\s*(.+)$/i);
+    const w = line.match(/^\s*STUUR_WA\s*:\s*(.+)$/i);
     if (a) {
       actions = a[1].split("|").map((s) => s.trim()).filter(Boolean).slice(0, 4);
     } else if (t) {
@@ -48,11 +56,17 @@ function parseReply(raw) {
       if (parts.length >= 2) task = { agent: parts[0], title: parts[1], brief: parts[2] || parts[1] };
     } else if (v) {
       improve = v[1].trim();
+    } else if (p) {
+      const parts = p[1].split("|").map((s) => s.trim());
+      if (parts.length >= 3) plan = { channel: parts[0], title: parts[1], when: parts[2], body: parts[3] || "" };
+    } else if (w) {
+      const parts = w[1].split("|").map((s) => s.trim());
+      if (parts.length >= 2) whatsapp = { to: parts[0], message: parts.slice(1).join(" | ") };
     } else {
       kept.push(line);
     }
   }
-  return { reply: kept.join("\n").trim(), actions, task, improve };
+  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp };
 }
 
 function orbitPos() {
@@ -168,6 +182,17 @@ function Nova({ token, onLogout }) {
   const [copied, setCopied] = useState(false);
   const [history, setHistory] = useState([]); // afgeronde activiteiten (historie-overzicht)
   const [showHistory, setShowHistory] = useState(false);
+  const [catalog, setCatalog] = useState([]);
+  const [showCatalog, setShowCatalog] = useState(false);
+  const [calendar, setCalendar] = useState([]);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [onboarding, setOnboarding] = useState([]);
+  const [showOnboard, setShowOnboard] = useState(false);
+  const [openOnboard, setOpenOnboard] = useState(null);
+  const [pendingWA, setPendingWA] = useState(null); // {to, message} wachtend op akkoord
+  const [prodName, setProdName] = useState("");
+  const [prodCat, setProdCat] = useState("");
+  const catalogRef = useRef([]);
   const greetedRef = useRef(false);
 
   const scrollRef = useRef(null);
@@ -176,6 +201,7 @@ function Nova({ token, onLogout }) {
   const tasksRef = useRef([]);
 
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+  useEffect(() => { catalogRef.current = catalog; }, [catalog]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, busy]);
 
   // Bij het inloggen: NOVA spreekt een korte begroeting uit, zet openstaande acties
@@ -196,6 +222,27 @@ function Nova({ token, onLogout }) {
         const r2 = await fetch(INBOX_URL, { headers: { Authorization: "Bearer " + token } });
         inbox = await r2.json();
       } catch (e) { void e; }
+      try {
+        const r3 = await fetch(CATALOG_URL, { headers: { Authorization: "Bearer " + token } });
+        const d3 = await r3.json();
+        if (Array.isArray(d3.items)) setCatalog(d3.items);
+      } catch (e) { void e; }
+      try {
+        const r4 = await fetch(CALENDAR_URL, { headers: { Authorization: "Bearer " + token } });
+        const d4 = await r4.json();
+        if (Array.isArray(d4.items)) setCalendar(d4.items);
+      } catch (e) { void e; }
+      try {
+        const r5 = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
+        const d5 = await r5.json();
+        if (Array.isArray(d5.items)) setOnboarding(d5.items);
+      } catch (e) { void e; }
+      let waInbox = [];
+      try {
+        const r6 = await fetch("/api/whatsapp-inbox", { headers: { Authorization: "Bearer " + token } });
+        const d6 = await r6.json();
+        if (Array.isArray(d6.items)) waInbox = d6.items;
+      } catch (e) { void e; }
 
       const hour = new Date().getHours();
       const groet = hour < 12 ? "Goedemorgen" : hour < 18 ? "Goedemiddag" : "Goedenavond";
@@ -208,6 +255,8 @@ function Nova({ token, onLogout }) {
         const urgent = inbox.emails.filter((e) => e.urgent).length;
         delen.push(`${inbox.emails.length} nieuwe mail${inbox.emails.length > 1 ? "s" : ""}${urgent ? `, waarvan ${urgent} je aandacht vragen` : ""}`);
       }
+      const waNieuw = waInbox.filter((m) => !m.read).length;
+      if (waNieuw > 0) delen.push(`${waNieuw} nieuw${waNieuw > 1 ? "e" : ""} WhatsApp-bericht${waNieuw > 1 ? "en" : ""}`);
 
       let tekst = `${groet}${naam ? ", " + naam : ""}, welkom terug. `;
       if (delen.length) {
@@ -268,6 +317,85 @@ function Nova({ token, onLogout }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  }
+
+  async function addProduct() {
+    const name = prodName.trim();
+    if (!name) return;
+    try {
+      const res = await fetch(CATALOG_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ name, category: prodCat.trim() }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) { setCatalog(d.items); setProdName(""); setProdCat(""); }
+    } catch (e) { void e; }
+  }
+  async function deleteProduct(id) {
+    try {
+      const res = await fetch(CATALOG_URL, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ id }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setCatalog(d.items);
+    } catch (e) { void e; }
+  }
+
+  async function addToCalendar(plan) {
+    try {
+      const res = await fetch(CALENDAR_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify(plan),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setCalendar(d.items);
+    } catch (e) { void e; }
+  }
+  async function deleteCalendarItem(id) {
+    try {
+      const res = await fetch(CALENDAR_URL, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ id }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setCalendar(d.items);
+    } catch (e) { void e; }
+  }
+
+  async function toggleOnboardStep(stepId, done) {
+    try {
+      const res = await fetch(ONBOARDING_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ stepId, done }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setOnboarding(d.items);
+    } catch (e) { void e; }
+  }
+
+  async function sendWhatsApp(to, message) {
+    try {
+      const res = await fetch(WHATSAPP_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ to, message }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        const reason = d.hint || d.error || "onbekende fout";
+        setMessages((p) => [...p, { role: "assistant", content: "WhatsApp niet verstuurd: " + reason }]);
+        return;
+      }
+      setMessages((p) => [...p, { role: "assistant", content: "WhatsApp verstuurd naar " + to + " via " + (d.provider || "provider") + "." }]);
+    } catch (err) {
+      setMessages((p) => [...p, { role: "assistant", content: "Kon WhatsApp niet versturen: " + (err.message || "onbekende fout") }]);
+    }
   }
 
   useEffect(() => {
@@ -333,7 +461,7 @@ function Nova({ token, onLogout }) {
     const res = await fetch(CHAT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify({ messages: msgs, mode }),
+      body: JSON.stringify({ messages: msgs, mode, catalog: catalogRef.current }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) { onLogout(); throw new Error("Sessie verlopen, log opnieuw in."); }
@@ -362,13 +490,15 @@ function Nova({ token, onLogout }) {
     setMessages(next); setInput(""); setBusy(true); setActions([]); setStatus("NOVA denkt na...");
     try {
       const raw = await callBackend(next.map((m) => ({ role: m.role, content: m.content })));
-      const { reply, actions: acts, task, improve } = parseReply(raw);
+      const { reply, actions: acts, task, improve, plan, whatsapp } = parseReply(raw);
       const finalReply = reply || "Sorry, ik kon even niet reageren.";
       setMessages((p) => [...p, { role: "assistant", content: finalReply }]);
       setStatus("Online \u00b7 klaar voor je opdracht");
       speak(finalReply);
       if (task) startTask(task);
       if (improve) addImprovement(improve);
+      if (plan) addToCalendar(plan);
+      if (whatsapp) setPendingWA(whatsapp);
       if (acts.length) setTimeout(() => placeActions(acts), 400);
     } catch (err) {
       setMessages((p) => [...p, { role: "assistant", content: "Er ging iets mis: " + (err.message || "onbekende fout") }]);
@@ -475,6 +605,21 @@ function Nova({ token, onLogout }) {
         <button onClick={() => setShowHistory(true)} title="Historie van afgeronde taken" style={{ height: 36, borderRadius: 18, border: "1px solid rgba(29,158,117,.4)", background: "rgba(29,158,117,.1)", color: "#5DCAA5", cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 13 }}>\u2713</span> Historie
           {history.length > 0 && (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: "#1D9E75", color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{history.length}</span>)}
+        </button>
+        <button onClick={() => setShowCatalog(true)} title="Productcatalogus" style={{ height: 36, borderRadius: 18, border: "1px solid rgba(56,230,255,.4)", background: "rgba(56,230,255,.1)", color: CYAN, cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13 }}>\ud83d\udce6</span> Materieel
+          {catalog.length > 0 && (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: CYAN, color: "#04122B", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{catalog.length}</span>)}
+        </button>
+        <button onClick={() => setShowCalendar(true)} title="Contentkalender" style={{ height: 36, borderRadius: 18, border: "1px solid rgba(127,119,221,.4)", background: "rgba(127,119,221,.12)", color: "#B3ADEE", cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13 }}>\ud83d\uddd3\ufe0f</span> Kalender
+          {calendar.length > 0 && (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: PURPLE, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{calendar.length}</span>)}
+        </button>
+        <button onClick={() => setShowOnboard(true)} title="Onboarding-checklist voor koppelingen" style={{ height: 36, borderRadius: 18, border: "1px solid rgba(180,210,255,.3)", background: "rgba(180,210,255,.06)", color: "rgba(220,238,255,.85)", cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13 }}>\ud83e\udded</span> Setup
+          {(() => {
+            const open = onboarding.reduce((n, k) => n + (k.total - k.done), 0);
+            return open > 0 ? (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: "rgba(180,210,255,.25)", color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{open}</span>) : null;
+          })()}
         </button>
         <button onClick={onLogout} title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>\u23fb</button>
         <div style={{ fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
@@ -644,6 +789,155 @@ function Nova({ token, onLogout }) {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCatalog && (
+        <div onClick={() => setShowCatalog(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 21, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "82vh", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid rgba(56,230,255,.15)" }}>
+              <span style={{ fontSize: 18 }}>\ud83d\udce6</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Materieel & apparatuur</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>NOVA gebruikt dit automatisch bij aankondigingen en content</div>
+              </div>
+              <button onClick={() => setShowCatalog(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+            </div>
+            <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderBottom: "1px solid rgba(56,230,255,.1)" }}>
+              <input value={prodName} onChange={(e) => setProdName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addProduct()} placeholder="Naam (bijv. Rookmachine)" style={{ flex: 2, background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 10, padding: "9px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
+              <input value={prodCat} onChange={(e) => setProdCat(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addProduct()} placeholder="Categorie" style={{ flex: 1, background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 10, padding: "9px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
+              <button onClick={addProduct} style={{ border: "none", borderRadius: 10, padding: "0 16px", background: `linear-gradient(135deg, ${CYAN}, ${PURPLE})`, color: "#04122B", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>+</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8, minHeight: 120 }}>
+              {catalog.length === 0 && (<div style={{ fontSize: 13, color: "rgba(180,210,255,.55)", lineHeight: 1.6, textAlign: "center", padding: "26px 10px" }}>Nog geen materieel toegevoegd. Voeg je apparatuur toe, dan kent NOVA die voortaan automatisch.</div>)}
+              {catalog.map((p) => (
+                <div key={p.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px", background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.18)", borderRadius: 10 }}>
+                  <span style={{ fontSize: 13 }}>\ud83d\udd0a</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: "#E8F1FF" }}>{p.name}</div>
+                    {p.category && (<div style={{ fontSize: 10, color: "rgba(180,210,255,.45)", marginTop: 1 }}>{p.category}</div>)}
+                  </div>
+                  <button onClick={() => deleteProduct(p.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.4)", cursor: "pointer", fontSize: 15 }}>\u00d7</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCalendar && (
+        <div onClick={() => setShowCalendar(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 21, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "82vh", background: "#06182F", border: "1px solid rgba(127,119,221,.35)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid rgba(127,119,221,.2)" }}>
+              <span style={{ fontSize: 18 }}>\ud83d\uddd3\ufe0f</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Contentkalender</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Geplande content \u00b7 posten gaat automatisch zodra het kanaal gekoppeld is</div>
+              </div>
+              <button onClick={() => setShowCalendar(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8, minHeight: 120 }}>
+              {calendar.length === 0 && (<div style={{ fontSize: 13, color: "rgba(180,210,255,.55)", lineHeight: 1.6, textAlign: "center", padding: "26px 10px" }}>Nog geen content ingepland. Vraag NOVA bijvoorbeeld om een TikTok-post voor zaterdag in te plannen.</div>)}
+              {calendar.map((c) => (
+                <div key={c.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "rgba(127,119,221,.07)", border: "1px solid rgba(127,119,221,.22)", borderRadius: 10 }}>
+                  <span style={{ fontSize: 13 }}>{agentIcon(c.channel)}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.4 }}>{c.title}</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 2 }}>{c.channel} \u00b7 {(() => { try { return new Date(c.when).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch { return c.when; } })()} \u00b7 {c.status}</div>
+                    {c.body && (<div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 4, lineHeight: 1.4 }}>{c.body}</div>)}
+                  </div>
+                  <button onClick={() => deleteCalendarItem(c.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.4)", cursor: "pointer", fontSize: 15 }}>\u00d7</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showOnboard && (
+        <div onClick={() => { setShowOnboard(false); setOpenOnboard(null); }} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 22, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(640px, 100%)", maxHeight: "86vh", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: "1px solid rgba(56,230,255,.12)" }}>
+              <span style={{ fontSize: 20 }}>\ud83e\udded</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>{openOnboard ? openOnboard.title : "Setup & koppelingen"}</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>{openOnboard ? openOnboard.intent : "Stap voor stap door wat nodig is per koppeling. Vink af zodra je een stap hebt gedaan."}</div>
+              </div>
+              {openOnboard && (<button onClick={() => setOpenOnboard(null)} style={{ background: "transparent", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, color: CYAN, cursor: "pointer", padding: "4px 10px", fontSize: 11 }}>\u2190 terug</button>)}
+              <button onClick={() => { setShowOnboard(false); setOpenOnboard(null); }} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+            </div>
+
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px" }}>
+              {!openOnboard && (
+                <>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginBottom: 12, lineHeight: 1.5, padding: "10px 12px", background: "rgba(56,230,255,.05)", borderRadius: 8, border: "1px solid rgba(56,230,255,.15)" }}>
+                    <strong style={{ color: CYAN }}>Veilig:</strong> wachtwoorden en sleutels voer je NIET hier in. Die staan alleen in Vercel \u2192 Environment Variables. NOVA leest hier uit of een koppeling klaar is, niet de waarde zelf.
+                  </div>
+                  {onboarding.map((c) => (
+                    <div key={c.key} onClick={() => setOpenOnboard(c)} role="button" tabIndex={0} style={{ display: "flex", gap: 12, padding: "14px 14px", marginBottom: 8, background: c.connected ? "rgba(29,158,117,.06)" : "rgba(255,255,255,.025)", border: `1px solid ${c.connected ? "rgba(29,158,117,.25)" : "rgba(180,210,255,.12)"}`, borderRadius: 10, cursor: "pointer", alignItems: "center" }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: c.connected ? "#1D9E75" : "rgba(255,255,255,.08)", color: c.connected ? "#fff" : "rgba(180,210,255,.5)", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: c.connected ? "none" : "1px solid rgba(180,210,255,.2)" }}>{c.connected ? "\u2713" : c.done}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14, color: "#fff", fontWeight: 500 }}>{c.title}</div>
+                        <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 2, lineHeight: 1.5 }}>{c.intent}</div>
+                        <div style={{ marginTop: 8, height: 3, borderRadius: 2, background: "rgba(255,255,255,.1)" }}>
+                          <div style={{ height: "100%", width: `${Math.round((c.done / c.total) * 100)}%`, background: c.connected ? "#1D9E75" : CYAN, borderRadius: 2 }} />
+                        </div>
+                        <div style={{ fontSize: 10, color: "rgba(180,210,255,.45)", marginTop: 4 }}>{c.connected ? "Koppeling actief" : `${c.done} van ${c.total} stappen afgevinkt`}</div>
+                      </div>
+                      <span style={{ color: "rgba(180,210,255,.5)", fontSize: 18 }}>\u203a</span>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {openOnboard && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {openOnboard.steps.map((s, i) => (
+                    <div key={s.id} style={{ display: "flex", gap: 12, padding: "12px 14px", background: s.done ? "rgba(29,158,117,.07)" : "rgba(255,255,255,.025)", border: `1px solid ${s.done ? "rgba(29,158,117,.25)" : "rgba(180,210,255,.12)"}`, borderRadius: 10, alignItems: "flex-start" }}>
+                      <button onClick={() => toggleOnboardStep(s.id, !s.done)} style={{ width: 22, height: 22, borderRadius: 6, background: s.done ? "#1D9E75" : "transparent", color: "#fff", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1, border: s.done ? "none" : "1.5px solid rgba(180,210,255,.3)", cursor: "pointer" }}>{s.done ? "\u2713" : ""}</button>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, color: s.done ? "rgba(180,210,255,.55)" : "#fff", fontWeight: 500, textDecoration: s.done ? "line-through" : "none" }}>{i + 1}. {s.title}</div>
+                        <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 4, lineHeight: 1.55 }}>{s.help}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {!openOnboard && (
+              <div style={{ padding: "12px 18px", borderTop: "1px solid rgba(56,230,255,.1)", fontSize: 11, color: "rgba(180,210,255,.5)", lineHeight: 1.5 }}>
+                Na een nieuwe sleutel in Vercel: opnieuw deployen zonder build-cache, dan dit paneel weer openen.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {pendingWA && (
+        <div onClick={() => setPendingWA(null)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(440px, 100%)", background: "#06182F", border: "1px solid rgba(29,158,117,.35)", borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid rgba(29,158,117,.2)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 22 }}>\ud83d\udcac</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>WhatsApp versturen?</div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>NOVA wacht op je akkoord</div>
+                </div>
+                <button onClick={() => setPendingWA(null)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+              </div>
+            </div>
+            <div style={{ padding: "14px 20px" }}>
+              <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", marginBottom: 6 }}>Aan</div>
+              <div style={{ fontSize: 13, color: "#E8F1FF", marginBottom: 14, fontFamily: "monospace" }}>{pendingWA.to}</div>
+              <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", marginBottom: 6 }}>Bericht</div>
+              <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.5, padding: "10px 12px", background: "rgba(56,230,255,.06)", border: "1px solid rgba(56,230,255,.18)", borderRadius: 10, whiteSpace: "pre-wrap" }}>{pendingWA.message}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(29,158,117,.15)" }}>
+              <button onClick={() => setPendingWA(null)} style={{ flex: 1, border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "10px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Annuleren</button>
+              <button onClick={() => { const wa = pendingWA; setPendingWA(null); sendWhatsApp(wa.to, wa.message); }} style={{ flex: 1, border: "none", borderRadius: 10, padding: "10px", background: "linear-gradient(135deg, #1D9E75, #0F6E56)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Versturen</button>
             </div>
           </div>
         </div>

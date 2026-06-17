@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import config from "./_config.js";
 
 // Beveiligde login. Het wachtwoord staat ALLEEN in Vercel (Environment Variables)
 // als NOVA_PASSWORD, nooit in de code. De controle gebeurt hier serverside.
@@ -18,8 +19,8 @@ export default function handler(req, res) {
     return res.status(405).json({ error: "Alleen POST" });
   }
 
-  const expected = process.env.NOVA_PASSWORD;
-  const secret = process.env.NOVA_SECRET || expected || "";
+  const expected = config.get("NOVA_PASSWORD");
+  const secret = config.get("NOVA_SECRET") || expected || "";
 
   if (!expected) {
     return res.status(500).json({

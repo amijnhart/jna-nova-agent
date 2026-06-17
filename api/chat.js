@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken } from "./_auth.js";
+import config from "./_config.js";
 
 // De sleutel staat in de omgevingsvariabelen van Vercel (ANTHROPIC_API_KEY), nooit in de code.
 
@@ -24,7 +25,7 @@ const SYSTEM_PROMPT =
   "VERBETER: korte concrete omschrijving van wat er verbeterd of toegevoegd zou moeten worden. " +
   "Doe dit uit jezelf wanneer het je opvalt, zonder dat de eigenaar erom vraagt. Maximaal een VERBETER-regel per antwoord. " +
   "Sluit je antwoord ALTIJD af met een regel: ACTIES: gevolgd door drie tot vier korte vervolgacties, gescheiden door | . " +
-  "Hou elke actie onder de vijf woorden. De ACTIES-, TAAK- en VERBETER-regels worden niet voorgelezen.";
+  "Hou elke actie onder de vijf woorden. De ACTIES-, TAAK- en VERBETER-regels worden niet voorgelezen. WHATSAPP: als de gebruiker expliciet vraagt om een WhatsApp-bericht te sturen, voeg dan een aparte regel toe: STUUR_WA: telefoonnummer | berichttekst. Het nummer moet in internationaal formaat zijn (bijv. +31612345678). Doe dit ALLEEN op directe vraag van de gebruiker. Vraag eerst om akkoord als het bericht naar een klant gaat. De STUUR_WA-regel wordt niet voorgelezen. Als de gebruiker vraagt om content in te plannen of op een bepaald moment te posten, voeg dan een aparte regel toe: PLAN: kanaal | titel | ISO-datumtijd | korte omschrijving. Kies kanaal uit: tiktok, instagram, facebook, social. Gebruik voor de datumtijd het formaat JJJJ-MM-DDTHH:MM. Stel een logisch optimaal tijdstip voor als de gebruiker geen tijd noemt. De PLAN-regel wordt niet voorgelezen.";
 
 const WORKER_PROMPT =
   "Je bent een gespecialiseerde agent van JnA Events. Voer de opdracht volledig en concreet uit. " +
@@ -42,7 +43,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Niet ingelogd. Log opnieuw in." });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = config.get("ANTHROPIC_API_KEY");
   if (!apiKey) {
     console.error("ANTHROPIC_API_KEY ontbreekt in Vercel.");
     return res.status(500).json({
@@ -56,10 +57,18 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "messages ontbreekt" });
     }
     const anthropic = new Anthropic({ apiKey });
+    let system = mode === "worker" ? WORKER_PROMPT : SYSTEM_PROMPT;
+    // Productcatalogus meegeven zodat NOVA de apparatuur van JnA Events kent.
+    if (Array.isArray(req.body.catalog) && req.body.catalog.length) {
+      const lijst = req.body.catalog
+        .map((p) => "- " + p.name + (p.category ? " (" + p.category + ")" : "") + (p.description ? ": " + p.description : ""))
+        .join("\n");
+      system += " De apparatuur en het materieel van JnA Events (gebruik dit bij aankondigingen en content): \n" + lijst;
+    }
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1200,
-      system: mode === "worker" ? WORKER_PROMPT : SYSTEM_PROMPT,
+      system,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     });
     const reply = response.content

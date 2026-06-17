@@ -186,3 +186,140 @@ die gekoppeld zijn; tot die tijd zegt ze daar eerlijk over dat de koppeling
 nog moet komen, in plaats van verzonnen aantallen te noemen.
 
 Goedgekeurde taken verschijnen in het Historie-overzicht (knop rechtsboven).
+
+=====================================================================
+PRODUCTCATALOG & CONTENTKALENDER (nieuw)
+=====================================================================
+
+Twee nieuwe knoppen rechtsboven:
+
+MATERIEEL (productcatalogus)
+- Voeg hier de apparatuur van JnA Events toe (rookmachines, licht, geluid, enz.).
+- NOVA kent dit materieel daarna automatisch en gebruikt het bij aankondigingen
+  en content, zonder dat je het elke keer hoeft uit te leggen.
+
+KALENDER (contentkalender)
+- Vraag NOVA om content in te plannen ("plan een TikTok-post voor zaterdag 19:30").
+- NOVA zet de post in de kalender met een voorgesteld optimaal tijdstip.
+- LET OP: het echt POSTEN naar TikTok/Instagram gebeurt pas zodra die koppeling
+  actief is. Tot die tijd staat de content klaar met status "gepland".
+
+Beide lijsten worden blijvend bewaard als je Vercel KV hebt gekoppeld
+(zie de sectie over de verbeterlijst). Zonder KV blijven ze per serversessie.
+
+=====================================================================
+ONBOARDING-CHECKLIST & CONFIG-LAAG (nieuw)
+=====================================================================
+
+Twee belangrijke verbeteringen die NOVA zelf had gesignaleerd:
+
+CONFIG-LAAG (api/_config.js)
+- Alle environment-variabelen worden nu via één bestand uitgelezen.
+- Geen enkel ander bestand leest nog direct process.env. Zo zie je in een
+  oogopslag waar alles staat en wat NOVA nodig heeft.
+- Geheime waarden staan NOOIT in de code, alleen in Vercel.
+
+ONBOARDING-CHECKLIST (knop "Onboarding" rechtsboven)
+- Toont per koppeling of die gezet is (groen vinkje) of mist (rood !).
+- Verplicht en optioneel zijn duidelijk gescheiden.
+- Elk item heeft uitleg en de exacte naam van de variabele in Vercel.
+- Knop "Verversen" om opnieuw te checken na een redeploy.
+- Geheime waarden worden NOOIT in de chat ingevoerd, alleen in de
+  Environment Variables van Vercel (dat staat ook in het paneel zelf).
+
+WhatsApp en IMAP-mail aansluitpunten zijn voorbereid maar niet actief.
+De checklist vertelt je precies welke gegevens je moet aanvragen.
+
+=====================================================================
+SETUP-CHECKLIST & GESCHEIDEN CONFIGURATIELAAG (nieuw)
+=====================================================================
+
+Twee aanvullingen vanuit NOVA's verbeterlijst:
+
+1. SETUP-KNOP (rechtsboven, naast Kalender)
+   Een stap-voor-stap checklist voor elke koppeling: WhatsApp Business, e-mail
+   (Gmail/Outlook/IMAP), TikTok Business, en Instagram/Facebook. Vink af wat je
+   gedaan hebt, NOVA bewaart de voortgang. Geeft je een duidelijke routekaart
+   per integratie in plaats van losse berichten.
+
+2. CONFIGURATIELAAG GESCHEIDEN
+   Alle instellingen en opslag-logica staan nu samen in api/_config.js. Open
+   dat bestand en je ziet in een oogopslag wat NOVA verwacht, waar gegevens
+   bewaard worden, en welke koppelingen klaarstaan voor de toekomst. Wijzigt
+   er iets aan opslag, dan pas je het op een plek aan.
+
+VEILIGHEID VAN WACHTWOORDEN (verbeterpunt 5)
+NOVA's verbeterpunt over wachtwoorden was al goed geregeld: wachtwoorden worden
+NOOIT via de chat ingevoerd. Het wachtwoord op het loginscherm gaat via een
+apart, beveiligd veld en wordt serverside gecontroleerd via een token. API-
+sleutels staan uitsluitend in Vercel Environment Variables, niet in de code.
+De Setup-checklist herhaalt dit principe expliciet zodat je het kunt zien.
+
+WHATSAPP EN IMAP (verbeterpunten 2 en 3)
+De aansluitpunten voor WhatsApp Business (Twilio/360dialog) en IMAP/Gmail
+staan klaar in de configuratielaag. Zodra jij de accounts hebt aangevraagd
+en de tokens in Vercel zet (zie de Setup-checklist voor de stappen), klikt
+de echte koppeling er automatisch in.
+
+=====================================================================
+WHATSAPP EN IMAP-MAIL AANSLUITPUNTEN (nieuw)
+=====================================================================
+
+De code voor WhatsApp en IMAP is nu af. Zodra jij de juiste tokens in Vercel
+zet en opnieuw deployt, werkt het echt - geen extra codewijziging nodig.
+
+----- IMAP-MAIL (werkt voor info@jna-events.nl) -----
+
+In Vercel Environment Variables (scope Production):
+   IMAP_HOST    bijv. mail.jna-events.nl  (vraag aan je hostingprovider)
+   IMAP_PORT    993 (standaard, kan leeg)
+   IMAP_USER    info@jna-events.nl
+   IMAP_PASS    een APP-WACHTWOORD, NIET je gewone wachtwoord
+
+App-wachtwoord aanmaken:
+- Bij Gmail: myaccount.google.com > Beveiliging > App-wachtwoorden
+- Bij Outlook: account.microsoft.com > Beveiliging > App-wachtwoorden
+- Bij je eigen hosting (jna-events.nl): in je controlepaneel onder
+  "E-mail" of "Mailbox-beheer" een app-specifiek wachtwoord aanmaken.
+
+Na deploy haalt NOVA bij elke login de laatste 20 mails op en bepaalt zelf
+welke aandacht vragen (op basis van inhoud en afzender).
+
+----- WHATSAPP via TWILIO (aanrader voor Nederland) -----
+
+In Vercel Environment Variables:
+   TWILIO_SID    je Account SID (begint met AC)
+   TWILIO_TOKEN  je Auth Token
+   TWILIO_FROM   "whatsapp:+1415..." (je goedgekeurde WhatsApp-nummer)
+   WHATSAPP_WEBHOOK_SECRET   verzin een lange willekeurige tekst
+
+Daarna in Twilio Console > Messaging > WhatsApp Sender:
+- Inbound webhook URL:
+  https://agent.jna-events.nl/api/whatsapp-webhook?secret=DE_GEHEIME_WAARDE
+- Method: HTTP POST
+
+----- WHATSAPP via 360DIALOG (alternatief) -----
+
+In Vercel:
+   WHATSAPP_TOKEN          je 360dialog API key
+   WHATSAPP_PHONE_ID       je phone number ID
+   WHATSAPP_WEBHOOK_SECRET verzin een lange willekeurige tekst
+
+In het 360dialog dashboard > Webhook:
+- URL: https://agent.jna-events.nl/api/whatsapp-webhook?secret=DE_GEHEIME_WAARDE
+
+----- WAT NOVA NU KAN -----
+
+Vraag NOVA bijvoorbeeld:
+- "Stuur Anna een WhatsApp dat de reservering bevestigd is, nummer +316..."
+  Dan toont ze een goedkeur-overlay; pas na jouw klik op "Versturen" gaat
+  het bericht echt naar de provider.
+- Bij login meldt NOVA hoeveel nieuwe mails er zijn (echt opgehaald via IMAP)
+  en hoeveel nieuwe WhatsApp-berichten via de webhook zijn binnengekomen.
+
+----- BEPERKING (eerlijk) -----
+
+NOVA haalt mail op bij login en bij handmatige checks. Echt LIVE binnenkomende
+mail die meteen verwerkt wordt vereist een achtergrondproces dat constant draait,
+en dat past niet in serverless. Voor 95% van de gebruikssituaties is ophalen
+bij login even praktisch.
