@@ -1,27 +1,44 @@
 import { verifyToken } from "./_auth.js";
-import { CONFIG } from "./_config.js";
+import { CONFIG, readData } from "./_config.js";
 
 // Inbox-overzicht voor de welkomstbriefing en handmatige checks.
 //
-// Werkt automatisch zodra IMAP gekoppeld is via:
-//   IMAP_HOST  (bijv. mail.jna-events.nl of imap.gmail.com)
-//   IMAP_PORT  (optioneel, standaard 993)
-//   IMAP_USER  (mailadres)
-//   IMAP_PASS  (app-wachtwoord, NIET je gewone wachtwoord)
+// IMAP-instellingen worden in deze volgorde gezocht:
+//   1. Via /api/imap-settings opgeslagen waarden (in Vercel KV) - voorkeur
+//   2. Environment variables (IMAP_HOST/IMAP_USER/IMAP_PASS) - fallback
 //
-// We halen de laatste 20 berichten op. NOVA bepaalt zelf welke aandacht vragen
-// (op basis van afzender, onderwerp en inhoud).
+// We halen de laatste 20 berichten op. NOVA bepaalt zelf welke aandacht vragen.
 
-async function fetchImapInbox() {
-  // Dynamische import zodat de bundle klein blijft als IMAP niet gebruikt wordt.
+const SETTINGS_KEY = "nova_imap_settings";
+
+async function getImapConfig() {
+  // Eerst KV
+  const stored = await readData(SETTINGS_KEY, null);
+  if (stored && stored.host && stored.user && stored.pass) {
+    return { host: stored.host, port: stored.port || 993, user: stored.user, pass: stored.pass, source: "app" };
+  }
+  // Anders env-variables
+  if (process.env.IMAP_HOST && process.env.IMAP_USER && process.env.IMAP_PASS) {
+    return {
+      host: process.env.IMAP_HOST,
+      port: Number(process.env.IMAP_PORT) || 993,
+      user: process.env.IMAP_USER,
+      pass: process.env.IMAP_PASS,
+      source: "env",
+    };
+  }
+  return null;
+}
+
+async function fetchImapInbox(cfg) {
   const { ImapFlow } = await import("imapflow");
   const { simpleParser } = await import("mailparser");
 
   const client = new ImapFlow({
-    host: process.env.IMAP_HOST,
-    port: Number(process.env.IMAP_PORT) || 993,
+    host: cfg.host,
+    port: cfg.port,
     secure: true,
-    auth: { user: process.env.IMAP_USER, pass: process.env.IMAP_PASS },
+    auth: { user: cfg.user, pass: cfg.pass },
     logger: false,
   });
 
@@ -30,7 +47,6 @@ async function fetchImapInbox() {
   try {
     const lock = await client.getMailboxLock("INBOX");
     try {
-      // Laatste 20 berichten ophalen
       const total = client.mailbox.exists;
       if (total > 0) {
         const start = Math.max(1, total - 19);
@@ -66,21 +82,20 @@ export default async function handler(req, res) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!verifyToken(token)) return res.status(401).json({ error: "Niet ingelogd." });
 
-  const connected = CONFIG.hasMailConnection();
+  const cfg = await getImapConfig();
+  const gmailOutlookOnly = CONFIG.hasMailConnection() && !cfg;
 
-  if (!connected) {
+  if (!cfg && !gmailOutlookOnly) {
     return res.status(200).json({
       connected: false,
       emails: [],
-      note: "Mailkoppeling nog niet actief. Zet IMAP_HOST, IMAP_USER en IMAP_PASS in Vercel, of koppel Gmail/Outlook.",
+      note: "Mailkoppeling nog niet actief. Stel IMAP in via NOVA (zoek Setup of E-mail in de app), of zet de env-variabelen in Vercel.",
     });
   }
 
-  // IMAP heeft prioriteit als die is gezet (werkt voor info@jna-events.nl)
-  if (CONFIG.hasIMAP()) {
+  if (cfg) {
     try {
-      const emails = await fetchImapInbox();
-      // Eenvoudige aandacht-detectie: ongelezen + bevat trefwoorden
+      const emails = await fetchImapInbox(cfg);
       const aandacht = (m) => {
         if (!m.unread) return false;
         const t = (m.subject + " " + m.snippet).toLowerCase();
@@ -89,6 +104,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         connected: true,
         provider: "imap",
+        source: cfg.source,
         emails: emails.map((m) => ({ ...m, urgent: aandacht(m) })),
       });
     } catch (err) {
@@ -102,11 +118,10 @@ export default async function handler(req, res) {
     }
   }
 
-  // Plek voor Gmail/Outlook API zodra die gekoppeld zijn.
   return res.status(200).json({
     connected: true,
     provider: "gmail-or-outlook",
     emails: [],
-    note: "Gmail/Outlook-koppeling herkend, maar nog niet geïmplementeerd. IMAP werkt nu wel.",
+    note: "Gmail/Outlook-koppeling herkend, maar nog niet geïmplementeerd.",
   });
 }

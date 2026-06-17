@@ -150,6 +150,93 @@ function LoginScreen({ onLogin }) {
 
 const SYSTEM_NOTE = ""; // systeemprompt staat serverside
 
+function ImapForm({ current, onClose, onSave, onClear }) {
+  const [host, setHost] = useState(current?.host || "imap.hostinger.com");
+  const [port, setPort] = useState(current?.port || 993);
+  const [user, setUser] = useState(current?.user || "");
+  const [pass, setPass] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [okMsg, setOkMsg] = useState("");
+
+  async function submit() {
+    if (!host.trim() || !user.trim()) { setErr("Server en mailadres zijn verplicht."); return; }
+    if (!current?.passSet && !pass) { setErr("Wachtwoord is verplicht bij eerste keer instellen."); return; }
+    setBusy(true); setErr(""); setOkMsg("");
+    const result = await onSave(host.trim(), port, user.trim(), pass);
+    setBusy(false);
+    if (result.ok) {
+      setOkMsg("Opgeslagen. NOVA leest je mail bij de volgende login.");
+      setPass("");
+      setTimeout(() => onClose(), 1500);
+    } else {
+      setErr(result.error || "Opslaan mislukte.");
+    }
+  }
+
+  async function handleClear() {
+    if (!window.confirm("Mailinstellingen wissen? NOVA kan dan geen mail meer lezen tot je opnieuw instelt.")) return;
+    setBusy(true);
+    await onClear();
+    setBusy(false);
+    onClose();
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 26, padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(460px, 100%)", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: "1px solid rgba(56,230,255,.15)" }}>
+          <span style={{ fontSize: 20 }}>📧</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>E-mail instellen (IMAP)</div>
+            <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>{current?.configured ? "Ingesteld - wijzig of wis hieronder" : "Voer je IMAP-gegevens in"}</div>
+          </div>
+          <button onClick={onClose} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", lineHeight: 1.5, padding: "10px 12px", background: "rgba(56,230,255,.05)", borderRadius: 8, border: "1px solid rgba(56,230,255,.15)" }}>
+            <strong style={{ color: "#A0E8FF" }}>Veilig:</strong> je wachtwoord blijft serverside in jouw Vercel-opslag en wordt nooit teruggestuurd naar je browser. Maak in je mailprovider een <strong>app-wachtwoord</strong> aan; gebruik NIET je gewone wachtwoord.
+          </div>
+
+          <div>
+            <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>IMAP-server</label>
+            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="imap.hostinger.com" style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 2 }}>
+              <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>Mailadres</label>
+              <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="info@jna-events.nl" style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>Poort</label>
+              <input type="number" value={port} onChange={(e) => setPort(parseInt(e.target.value) || 993)} style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>App-wachtwoord {current?.passSet && <span style={{ color: "#5DCAA5" }}>(al ingesteld; alleen invullen om te wijzigen)</span>}</label>
+            <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder={current?.passSet ? "•••••••• ingesteld" : "app-wachtwoord (niet je gewone wachtwoord)"} style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+          </div>
+
+          {err && <div style={{ fontSize: 12, color: "#FF8FA3" }}>{err}</div>}
+          {okMsg && <div style={{ fontSize: 12, color: "#5DCAA5" }}>{okMsg}</div>}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.1)" }}>
+          {current?.configured && (
+            <button onClick={handleClear} disabled={busy} style={{ border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "9px 14px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Wissen</button>
+          )}
+          <div style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ background: "transparent", border: "1px solid rgba(180,210,255,.2)", color: "rgba(180,210,255,.7)", borderRadius: 10, padding: "9px 14px", fontSize: 12, cursor: "pointer" }}>Annuleren</button>
+          <button onClick={submit} disabled={busy} style={{ border: "none", borderRadius: 10, padding: "9px 18px", background: "linear-gradient(135deg, #38E6FF, #7F77DD)", color: "#04122B", fontSize: 12, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>{busy ? "Bezig..." : "Opslaan"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [token, setToken] = useState(() => {
     try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
@@ -177,6 +264,13 @@ function Nova({ token, onLogout }) {
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [voiceOn, setVoiceOn] = useState(true);
+  const [voiceRate, setVoiceRate] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem("nova_voice_rate")); return isFinite(v) && v >= 0.5 && v <= 2.0 ? v : 1.05; }
+    catch { return 1.05; }
+  });
+  const [showVoicePanel, setShowVoicePanel] = useState(false);
+  const [imapCfg, setImapCfg] = useState(null); // {configured, host, port, user, passSet}
+  const [showImap, setShowImap] = useState(false);
   const [status, setStatus] = useState("Online · klaar voor je opdracht");
   const [micSupported, setMicSupported] = useState(true);
   const [actions, setActions] = useState([]);
@@ -245,6 +339,11 @@ function Nova({ token, onLogout }) {
         const r5 = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
         const d5 = await r5.json();
         if (Array.isArray(d5.items)) setOnboarding(d5.items);
+      } catch (e) { void e; }
+      try {
+        const r6 = await fetch("/api/imap-settings", { headers: { Authorization: "Bearer " + token } });
+        const d6 = await r6.json();
+        setImapCfg(d6);
       } catch (e) { void e; }
       let waInbox = [];
       try {
@@ -385,6 +484,33 @@ function Nova({ token, onLogout }) {
       });
       const d = await res.json();
       if (Array.isArray(d.items)) setOnboarding(d.items);
+    } catch (e) { void e; }
+  }
+
+  async function saveImapSettings(host, port, user, pass) {
+    try {
+      const res = await fetch("/api/imap-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ host, port, user, pass }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "fout bij opslaan");
+      setImapCfg(d);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+
+  async function clearImapSettings() {
+    try {
+      const res = await fetch("/api/imap-settings", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + token },
+      });
+      const d = await res.json();
+      setImapCfg(d);
     } catch (e) { void e; }
   }
 
@@ -662,7 +788,7 @@ function Nova({ token, onLogout }) {
     sentences.forEach((sentence, i) => {
       const u = new SpeechSynthesisUtterance(sentence.trim());
       u.lang = "nl-NL";
-      u.rate = 1.05;   // iets sneller dan voorheen (was 0.98), dichter bij menselijk
+      u.rate = voiceRate;   // instelbaar via de schuifregelaar bij het stem-icoon
       u.pitch = 1.0;   // natuurlijke pitch (was 0.95, te laag)
       u.volume = 1.0;
       if (voice) u.voice = voice;
@@ -676,6 +802,24 @@ function Nova({ token, onLogout }) {
   }
   function stopSpeaking() { window.speechSynthesis?.cancel(); setSpeaking(false); }
   function toggleVoice() { if (voiceOn) stopSpeaking(); setVoiceOn((v) => !v); }
+
+  // Pas spraaktempo aan en sla op zodat het bewaard blijft tussen sessies.
+  function updateVoiceRate(rate) {
+    setVoiceRate(rate);
+    try { localStorage.setItem("nova_voice_rate", String(rate)); } catch (e) { void e; }
+  }
+
+  // Korte test-zin uitspreken zodat je het effect direct hoort.
+  function testVoice(rate) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance("Zo klink ik bij dit tempo.");
+    u.lang = "nl-NL";
+    u.rate = rate;
+    u.pitch = 1.0;
+    const v = pickVoice(); if (v) u.voice = v;
+    window.speechSynthesis.speak(u);
+  }
 
   async function toggleMic() {
     if (!micSupported) { setStatus("Spraak werkt in Chrome of Edge — typ je bericht"); return; }
@@ -859,7 +1003,30 @@ function Nova({ token, onLogout }) {
           <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", letterSpacing: 1 }}>NOVA · engineering &amp; design</div>
         </div>
         <div style={{ marginLeft: "auto", fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
-        <button onClick={toggleVoice} aria-label="Stem aan of uit" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: voiceOn ? "rgba(56,230,255,.12)" : "transparent", color: voiceOn ? CYAN : "rgba(180,210,255,.5)", cursor: "pointer", fontSize: 15 }}>{voiceOn ? "🔊" : "🔇"}</button>
+        <div className="voice-wrapper" onMouseEnter={() => setShowVoicePanel(true)} onMouseLeave={() => setShowVoicePanel(false)} style={{ position: "relative" }}>
+          <button onClick={toggleVoice} aria-label="Stem aan of uit" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: voiceOn ? "rgba(56,230,255,.12)" : "transparent", color: voiceOn ? CYAN : "rgba(180,210,255,.5)", cursor: "pointer", fontSize: 15 }}>{voiceOn ? "🔊" : "🔇"}</button>
+          {showVoicePanel && voiceOn && (
+            <div style={{ position: "absolute", top: 44, right: 0, background: "rgba(6,24,47,.96)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 12, padding: "12px 14px", minWidth: 220, zIndex: 50, boxShadow: "0 6px 24px rgba(0,0,0,.4)", backdropFilter: "blur(10px)" }}>
+              <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".5px" }}>Spraaktempo</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>traag</span>
+                <input
+                  type="range" min="0.7" max="1.5" step="0.05" value={voiceRate}
+                  onChange={(e) => updateVoiceRate(parseFloat(e.target.value))}
+                  onMouseUp={(e) => testVoice(parseFloat(e.target.value))}
+                  onTouchEnd={(e) => testVoice(parseFloat(e.target.value))}
+                  style={{ flex: 1, accentColor: CYAN, cursor: "pointer" }}
+                />
+                <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>snel</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                <span style={{ fontSize: 11, color: CYAN, fontWeight: 600 }}>{voiceRate.toFixed(2)}×</span>
+                <button onClick={() => { updateVoiceRate(1.05); testVoice(1.05); }} style={{ background: "transparent", border: "1px solid rgba(56,230,255,.3)", color: "rgba(180,210,255,.7)", borderRadius: 6, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>standaard</button>
+              </div>
+              <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 8, lineHeight: 1.4 }}>Versleep en laat los om te testen. Je voorkeur wordt onthouden.</div>
+            </div>
+          )}
+        </div>
         <button onClick={onLogout} title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>⏻</button>
       </header>
 
@@ -923,6 +1090,7 @@ function Nova({ token, onLogout }) {
             const panels = [
               improvements.length > 0 && { key: "imp", icon: "✨", color: AMBER, label: "Verbeteringen", count: improvements.length, onClick: () => setShowImprove(true) },
               history.length > 0 && { key: "his", icon: "✓", color: "#5DCAA5", label: "Historie", count: history.length, onClick: () => setShowHistory(true) },
+              { key: "mail", icon: "📧", color: imapCfg?.configured ? "#5DCAA5" : AMBER, label: imapCfg?.configured ? "E-mail" : "E-mail instellen", count: 0, onClick: () => setShowImap(true) },
               { key: "cat", icon: "📦", color: CYAN, label: "Materieel", count: catalog.length, onClick: () => setShowCatalog(true) },
               { key: "cal", icon: "🗓️", color: "#B3ADEE", label: "Kalender", count: calendar.length, onClick: () => setShowCalendar(true) },
               open > 0 && { key: "set", icon: "🧭", color: "rgba(220,238,255,.85)", label: "Setup", count: open, onClick: () => setShowOnboard(true) },
@@ -1348,6 +1516,15 @@ function Nova({ token, onLogout }) {
           </div>
         );
       })()}
+
+      {showImap && (
+        <ImapForm
+          current={imapCfg}
+          onClose={() => setShowImap(false)}
+          onSave={saveImapSettings}
+          onClear={clearImapSettings}
+        />
+      )}
 
       {pendingWA && (
         <div onClick={() => setPendingWA(null)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
