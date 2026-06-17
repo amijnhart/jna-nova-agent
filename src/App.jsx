@@ -150,20 +150,54 @@ function LoginScreen({ onLogin }) {
 
 const SYSTEM_NOTE = ""; // systeemprompt staat serverside
 
+// Bekende mailproviders met hun IMAP-instellingen.
+// NOVA herkent op basis van het mailadres welke provider het is en vult alles in.
+const MAIL_PROVIDERS = [
+  { match: /@gmail\.com$/i, host: "imap.gmail.com", port: 993, name: "Gmail", note: "Gebruik een app-wachtwoord, niet je gewone Google-wachtwoord. Maak hem aan op myaccount.google.com onder Beveiliging." },
+  { match: /@(outlook|hotmail|live|msn)\.(com|nl|be)$/i, host: "outlook.office365.com", port: 993, name: "Outlook / Hotmail", note: "Schakel IMAP in via Outlook-instellingen en maak een app-wachtwoord aan op account.microsoft.com." },
+  { match: /@(yahoo)\.(com|nl|be)$/i, host: "imap.mail.yahoo.com", port: 993, name: "Yahoo", note: "Maak een app-wachtwoord aan in je Yahoo accountbeveiliging." },
+  { match: /@(ziggo|upcmail|chello)\.nl$/i, host: "imap.ziggo.nl", port: 993, name: "Ziggo" },
+  { match: /@(kpnmail|planet|hetnet)\.nl$/i, host: "mail.kpnmail.nl", port: 993, name: "KPN" },
+  { match: /@xs4all\.nl$/i, host: "imap.xs4all.nl", port: 993, name: "XS4ALL" },
+  { match: /@(home|quicknet|casema|tweakdsl|caiway)\.nl$/i, host: "imap.home.nl", port: 993, name: "Home.nl" },
+  { match: /@(telenet|skynet|proximus|scarlet)\.be$/i, host: "imap.telenet.be", port: 993, name: "Telenet" },
+  { match: /@icloud\.com$/i, host: "imap.mail.me.com", port: 993, name: "iCloud", note: "Apple vereist een app-specifiek wachtwoord. Maak hem aan op appleid.apple.com." },
+  { match: /@(hostinger|jna-events)\.nl$/i, host: "imap.hostinger.com", port: 993, name: "Hostinger" },
+];
+
+function detectProvider(email) {
+  const lower = (email || "").toLowerCase();
+  for (const p of MAIL_PROVIDERS) {
+    if (p.match.test(lower)) return p;
+  }
+  // Fallback: probeer imap.[domein] - werkt verrassend vaak voor hosting-mail
+  const domain = lower.split("@")[1];
+  if (domain && domain.includes(".")) {
+    return { host: "imap." + domain, port: 993, name: domain, guessed: true };
+  }
+  return null;
+}
+
 function ImapForm({ current, onClose, onSave, onClear }) {
-  const [host, setHost] = useState(current?.host || "imap.hostinger.com");
-  const [port, setPort] = useState(current?.port || 993);
   const [user, setUser] = useState(current?.user || "");
   const [pass, setPass] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [okMsg, setOkMsg] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [hostOverride, setHostOverride] = useState(current?.host || "");
+  const [portOverride, setPortOverride] = useState(current?.port || 993);
+
+  const detected = detectProvider(user);
+  const host = hostOverride || detected?.host || "";
+  const port = portOverride || detected?.port || 993;
 
   async function submit() {
-    if (!host.trim() || !user.trim()) { setErr("Server en mailadres zijn verplicht."); return; }
-    if (!current?.passSet && !pass) { setErr("Wachtwoord is verplicht bij eerste keer instellen."); return; }
+    if (!user.trim()) { setErr("Vul je mailadres in."); return; }
+    if (!host) { setErr("Kon de server niet herkennen. Klik op 'geavanceerd' en vul handmatig in."); return; }
+    if (!current?.passSet && !pass) { setErr("Vul je app-wachtwoord in."); return; }
     setBusy(true); setErr(""); setOkMsg("");
-    const result = await onSave(host.trim(), port, user.trim(), pass);
+    const result = await onSave(host, port, user.trim(), pass);
     setBusy(false);
     if (result.ok) {
       setOkMsg("Opgeslagen. NOVA leest je mail bij de volgende login.");
@@ -184,53 +218,89 @@ function ImapForm({ current, onClose, onSave, onClear }) {
 
   return (
     <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 26, padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(460px, 100%)", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16, overflow: "hidden" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(460px, 100%)", maxHeight: "92vh", overflowY: "auto", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: "1px solid rgba(56,230,255,.15)" }}>
           <span style={{ fontSize: 20 }}>📧</span>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>E-mail instellen (IMAP)</div>
-            <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>{current?.configured ? "Ingesteld - wijzig of wis hieronder" : "Voer je IMAP-gegevens in"}</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>E-mail koppelen</div>
+            <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>{current?.configured ? "Ingesteld - wijzig of wis hieronder" : "Voer je mailadres en app-wachtwoord in"}</div>
           </div>
-          <button onClick={onClose} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>×</button>
+          <button onClick={onClose} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px", minWidth: 32, minHeight: 32 }}>×</button>
         </div>
 
-        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", lineHeight: 1.5, padding: "10px 12px", background: "rgba(56,230,255,.05)", borderRadius: 8, border: "1px solid rgba(56,230,255,.15)" }}>
-            <strong style={{ color: "#A0E8FF" }}>Veilig:</strong> je wachtwoord blijft serverside in jouw Vercel-opslag en wordt nooit teruggestuurd naar je browser. Maak in je mailprovider een <strong>app-wachtwoord</strong> aan; gebruik NIET je gewone wachtwoord.
+            <strong style={{ color: "#A0E8FF" }}>Veilig:</strong> je wachtwoord blijft op de server en wordt nooit teruggestuurd naar je browser. Maak een <strong>app-wachtwoord</strong> aan in je mailprovider; gebruik niet je gewone wachtwoord.
           </div>
 
           <div>
-            <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>IMAP-server</label>
-            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="imap.hostinger.com" style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+            <label style={{ fontSize: 12, color: "rgba(180,210,255,.8)", display: "block", marginBottom: 6 }}>Je mailadres</label>
+            <input
+              type="email"
+              autoCapitalize="off"
+              autoCorrect="off"
+              value={user}
+              onChange={(e) => setUser(e.target.value)}
+              placeholder="bijv. info@jna-events.nl"
+              style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 10, padding: "12px 14px", color: "#E8F1FF", fontSize: 15, outline: "none", fontFamily: "inherit", boxSizing: "border-box", minHeight: 44 }}
+            />
           </div>
 
-          <div style={{ display: "flex", gap: 10 }}>
-            <div style={{ flex: 2 }}>
-              <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>Mailadres</label>
-              <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="info@jna-events.nl" style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+          {detected && (
+            <div style={{ padding: "10px 12px", background: detected.guessed ? "rgba(239,159,39,.06)" : "rgba(29,158,117,.06)", border: "1px solid " + (detected.guessed ? "rgba(239,159,39,.25)" : "rgba(29,158,117,.25)"), borderRadius: 8, fontSize: 12, color: "rgba(220,238,255,.85)", lineHeight: 1.5 }}>
+              {detected.guessed ? (
+                <>NOVA gokt: <strong>{detected.host}</strong> op poort {detected.port}. Werkt het niet? Klik op geavanceerd hieronder.</>
+              ) : (
+                <>Herkend: <strong>{detected.name}</strong> · server {detected.host}, poort {detected.port}.</>
+              )}
+              {detected.note && (<div style={{ marginTop: 6, fontSize: 11, color: "rgba(180,210,255,.7)" }}>{detected.note}</div>)}
             </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>Poort</label>
-              <input type="number" value={port} onChange={(e) => setPort(parseInt(e.target.value) || 993)} style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
-            </div>
-          </div>
+          )}
 
           <div>
-            <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>App-wachtwoord {current?.passSet && <span style={{ color: "#5DCAA5" }}>(al ingesteld; alleen invullen om te wijzigen)</span>}</label>
-            <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder={current?.passSet ? "•••••••• ingesteld" : "app-wachtwoord (niet je gewone wachtwoord)"} style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+            <label style={{ fontSize: 12, color: "rgba(180,210,255,.8)", display: "block", marginBottom: 6 }}>
+              App-wachtwoord {current?.passSet && <span style={{ color: "#5DCAA5", fontSize: 11 }}>(al ingesteld, alleen wijzigen indien nodig)</span>}
+            </label>
+            <input
+              type="password"
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="new-password"
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+              placeholder={current?.passSet ? "•••••••• ingesteld" : "app-wachtwoord"}
+              style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 10, padding: "12px 14px", color: "#E8F1FF", fontSize: 15, outline: "none", fontFamily: "inherit", boxSizing: "border-box", minHeight: 44 }}
+            />
           </div>
+
+          <button onClick={() => setShowAdvanced((v) => !v)} style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.6)", fontSize: 11, cursor: "pointer", textAlign: "left", padding: 0 }}>
+            {showAdvanced ? "▾" : "▸"} Geavanceerd: server handmatig instellen
+          </button>
+
+          {showAdvanced && (
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 2 }}>
+                <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>IMAP-server</label>
+                <input value={hostOverride} onChange={(e) => setHostOverride(e.target.value)} placeholder={detected?.host || "imap.voorbeeld.nl"} style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "10px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box", minHeight: 40 }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 11, color: "rgba(180,210,255,.7)", display: "block", marginBottom: 4 }}>Poort</label>
+                <input type="number" value={portOverride} onChange={(e) => setPortOverride(parseInt(e.target.value) || 993)} style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "10px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box", minHeight: 40 }} />
+              </div>
+            </div>
+          )}
 
           {err && <div style={{ fontSize: 12, color: "#FF8FA3" }}>{err}</div>}
           {okMsg && <div style={{ fontSize: 12, color: "#5DCAA5" }}>{okMsg}</div>}
         </div>
 
-        <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.1)" }}>
+        <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.1)", flexWrap: "wrap" }}>
           {current?.configured && (
-            <button onClick={handleClear} disabled={busy} style={{ border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "9px 14px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Wissen</button>
+            <button onClick={handleClear} disabled={busy} style={{ border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "10px 14px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 13, fontWeight: 600, cursor: "pointer", minHeight: 44 }}>Wissen</button>
           )}
           <div style={{ flex: 1 }} />
-          <button onClick={onClose} style={{ background: "transparent", border: "1px solid rgba(180,210,255,.2)", color: "rgba(180,210,255,.7)", borderRadius: 10, padding: "9px 14px", fontSize: 12, cursor: "pointer" }}>Annuleren</button>
-          <button onClick={submit} disabled={busy} style={{ border: "none", borderRadius: 10, padding: "9px 18px", background: "linear-gradient(135deg, #38E6FF, #7F77DD)", color: "#04122B", fontSize: 12, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>{busy ? "Bezig..." : "Opslaan"}</button>
+          <button onClick={onClose} style={{ background: "transparent", border: "1px solid rgba(180,210,255,.2)", color: "rgba(180,210,255,.7)", borderRadius: 10, padding: "10px 14px", fontSize: 13, cursor: "pointer", minHeight: 44 }}>Annuleren</button>
+          <button onClick={submit} disabled={busy} style={{ border: "none", borderRadius: 10, padding: "10px 18px", background: "linear-gradient(135deg, #38E6FF, #7F77DD)", color: "#04122B", fontSize: 13, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1, minHeight: 44 }}>{busy ? "Bezig..." : "Opslaan"}</button>
         </div>
       </div>
     </div>
@@ -989,6 +1059,16 @@ function Nova({ token, onLogout }) {
         .panel-icon:hover .panel-icon-circle{transform:scale(1.12);background:rgba(8,28,56,.95);box-shadow:0 4px 18px rgba(56,230,255,.25)}
         .panel-icon-tooltip{position:absolute;top:50px;left:50%;transform:translateX(-50%);background:rgba(6,24,47,.95);border:1px solid;padding:4px 10px;border-radius:12px;font-size:11px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .2s ease;backdrop-filter:blur(8px)}
         .panel-icon:hover .panel-icon-tooltip{opacity:1}
+        .panel-icon:active .panel-icon-tooltip,.panel-icon:focus .panel-icon-tooltip{opacity:1}
+        @media (max-width: 720px){
+          .nova-main-flex{flex-direction:column!important;flex-wrap:nowrap!important}
+          .nova-orb-area{flex:0 0 auto!important;min-height:520px!important;padding:20px!important}
+          .nova-chat-area{flex:1 1 auto!important;width:100%!important;border-left:none!important;border-top:1px solid rgba(56,230,255,.1)!important;min-height:240px!important;max-height:none!important}
+          .nova-orb-area .panel-icon-circle{width:38px;height:38px}
+        }
+        @media (max-width: 480px){
+          .nova-orb-area{padding:12px!important;min-height:460px!important}
+        }
         @media(prefers-reduced-motion:reduce){*{animation:none!important}.idle-star{transition:opacity .4s}}
       `}</style>
 
@@ -1002,11 +1082,15 @@ function Nova({ token, onLogout }) {
           <div style={{ fontSize: 15, letterSpacing: 1, fontWeight: 800 }}>Agent van JnA Events</div>
           <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", letterSpacing: 1 }}>NOVA · engineering &amp; design</div>
         </div>
-        <div style={{ marginLeft: "auto", fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
+        <div className="nova-status-badge" style={{ marginLeft: "auto", fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
         <div className="voice-wrapper" onMouseEnter={() => setShowVoicePanel(true)} onMouseLeave={() => setShowVoicePanel(false)} style={{ position: "relative" }}>
-          <button onClick={toggleVoice} aria-label="Stem aan of uit" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: voiceOn ? "rgba(56,230,255,.12)" : "transparent", color: voiceOn ? CYAN : "rgba(180,210,255,.5)", cursor: "pointer", fontSize: 15 }}>{voiceOn ? "🔊" : "🔇"}</button>
-          {showVoicePanel && voiceOn && (
+          <button onClick={() => { if (window.matchMedia && window.matchMedia("(hover: none)").matches) { setShowVoicePanel((v) => !v); } else { toggleVoice(); } }} aria-label="Stem-instellingen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: voiceOn ? "rgba(56,230,255,.12)" : "transparent", color: voiceOn ? CYAN : "rgba(180,210,255,.5)", cursor: "pointer", fontSize: 15 }}>{voiceOn ? "🔊" : "🔇"}</button>
+          {showVoicePanel && (
             <div style={{ position: "absolute", top: 44, right: 0, background: "rgba(6,24,47,.96)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 12, padding: "12px 14px", minWidth: 220, zIndex: 50, boxShadow: "0 6px 24px rgba(0,0,0,.4)", backdropFilter: "blur(10px)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid rgba(56,230,255,.12)" }}>
+                <span style={{ fontSize: 12, color: "rgba(220,238,255,.85)" }}>Stem</span>
+                <button onClick={toggleVoice} style={{ border: "none", borderRadius: 6, padding: "4px 10px", background: voiceOn ? "rgba(29,158,117,.2)" : "rgba(255,107,138,.15)", color: voiceOn ? "#5DCAA5" : "#FF8FA3", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{voiceOn ? "🔊 aan" : "🔇 uit"}</button>
+              </div>
               <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".5px" }}>Spraaktempo</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>traag</span>
@@ -1030,8 +1114,8 @@ function Nova({ token, onLogout }) {
         <button onClick={onLogout} title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>⏻</button>
       </header>
 
-      <div style={{ flex: 1, display: "flex", flexWrap: "wrap", position: "relative", zIndex: 2 }}>
-        <div style={{ flex: "1 1 auto", minHeight: 480, position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 30 }}>
+      <div className="nova-main-flex" style={{ flex: 1, display: "flex", flexWrap: "wrap", position: "relative", zIndex: 2 }}>
+        <div className="nova-orb-area" style={{ flex: "1 1 auto", minHeight: 480, position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 30 }}>
           {actions.length === 0 && tasks.length === 0 && idleStars.map((s) => (<div key={s.id} className="idle-star" style={{ left: `${s.x}%`, top: `${s.y}%`, width: s.size, height: s.size, animationDuration: `${s.dur}s`, animationDelay: `${s.delay}s` }} />))}
 
           {actions.map((a) => (
@@ -1136,7 +1220,7 @@ function Nova({ token, onLogout }) {
           {tasks.filter((t) => t.state === "running").length > 0 && (<div style={{ marginTop: 8, fontSize: 11, color: AMBER, zIndex: 2 }}>{tasks.filter((t) => t.state === "running").length} agent(s) aan het werk</div>)}
         </div>
 
-        <div style={{ flex: "0 0 300px", width: 300, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(56,230,255,.1)", minHeight: 480, maxHeight: "calc(100vh - 70px)" }}>
+        <div className="nova-chat-area" style={{ flex: "0 0 300px", width: 300, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(56,230,255,.1)", minHeight: 480, maxHeight: "calc(100vh - 70px)" }}>
           <div ref={scrollRef} className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.map((m, i) => (<div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "88%", padding: "10px 14px", borderRadius: m.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px", background: m.role === "user" ? `linear-gradient(135deg, ${PURPLE}, #5A52B5)` : "rgba(56,230,255,.08)", border: m.role === "user" ? "none" : "1px solid rgba(56,230,255,.2)", fontSize: 13, lineHeight: 1.5, color: m.role === "user" ? "#fff" : "#DCEEFF", whiteSpace: "pre-wrap" }}>{m.content}</div>))}
             {busy && (<div style={{ alignSelf: "flex-start", padding: "12px 16px", borderRadius: "14px 14px 14px 4px", background: "rgba(56,230,255,.08)", border: "1px solid rgba(56,230,255,.2)", display: "flex", gap: 5 }}>{[0, 1, 2].map((d) => (<span key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: CYAN, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}</div>)}
