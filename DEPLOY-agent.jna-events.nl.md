@@ -132,3 +132,26 @@ Vanaf nu: bezoekers zien eerst een wachtwoordscherm. Na het juiste wachtwoord
 blijven ze 30 dagen ingelogd (op dat apparaat). Rechtsboven zit een uitlog-knop.
 
 Wachtwoord wijzigen? Pas NOVA_PASSWORD aan in Vercel en deploy opnieuw.
+
+=====================================================================
+VERBETERLIJST BLIJVEND BEWAREN (optioneel maar aanbevolen)
+=====================================================================
+
+NOVA verzamelt zelf verbeterpunten (de knop "Verbeteringen" rechtsboven).
+Standaard worden die alleen tijdens de serversessie bewaard. Wil je ze
+ECHT blijvend bewaren (ook na herstart), koppel dan gratis Vercel KV:
+
+1. Vercel project > tabblad Storage > Create Database > kies "KV".
+2. Klik Connect en koppel hem aan je project.
+3. Vercel zet dan automatisch KV_REST_API_URL en KV_REST_API_TOKEN klaar.
+4. Deploy opnieuw zonder build-cache.
+
+Zonder deze stap werkt de verbeterlijst gewoon, maar wordt hij niet
+permanent bewaard tussen serverherstarts.
+
+Hoe je de lijst gebruikt:
+- NOVA voegt zelf punten toe als haar iets opvalt dat beter kan.
+- Open de lijst via de knop "Verbeteringen" rechtsboven.
+- Klik "Kopieer voor Claude" en plak de lijst in een nieuw gesprek met
+  Claude. Vraag om de punten te verwerken in een update. Daarna push je
+  de nieuwe code met: npm run push

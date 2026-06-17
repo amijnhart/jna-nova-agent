@@ -6,6 +6,8 @@ const AMBER = "#EF9F27";
 
 const CHAT_URL = "/api/chat";
 const LOGIN_URL = "/api/login";
+const IMPROVE_URL = "/api/improvements";
+const INBOX_URL = "/api/inbox";
 const TOKEN_KEY = "nova_token";
 
 function cleanForSpeech(text) {
@@ -31,20 +33,24 @@ function parseReply(raw) {
   const lines = raw.split("\n");
   let actions = [];
   let task = null;
+  let improve = null;
   const kept = [];
   for (const line of lines) {
     const a = line.match(/^\s*ACTIES\s*:\s*(.+)$/i);
     const t = line.match(/^\s*TAAK\s*:\s*(.+)$/i);
+    const v = line.match(/^\s*VERBETER\s*:\s*(.+)$/i);
     if (a) {
       actions = a[1].split("|").map((s) => s.trim()).filter(Boolean).slice(0, 4);
     } else if (t) {
       const parts = t[1].split("|").map((s) => s.trim());
       if (parts.length >= 2) task = { agent: parts[0], title: parts[1], brief: parts[2] || parts[1] };
+    } else if (v) {
+      improve = v[1].trim();
     } else {
       kept.push(line);
     }
   }
-  return { reply: kept.join("\n").trim(), actions, task };
+  return { reply: kept.join("\n").trim(), actions, task, improve };
 }
 
 function orbitPos() {
@@ -155,6 +161,11 @@ function Nova({ token, onLogout }) {
   const [tasks, setTasks] = useState([]);
   const [openTask, setOpenTask] = useState(null);
   const [taskInput, setTaskInput] = useState("");
+  const [improvements, setImprovements] = useState([]);
+  const [showImprove, setShowImprove] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [briefing, setBriefing] = useState(null);
+  const [showBriefing, setShowBriefing] = useState(false);
 
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -163,6 +174,77 @@ function Nova({ token, onLogout }) {
 
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, busy]);
+
+  // Bij het inloggen: haal verbeterpunten + mailstatus op en stel een korte briefing samen.
+  useEffect(() => {
+    async function boot() {
+      let imps = [];
+      let inbox = { connected: false, emails: [], note: "" };
+      try {
+        const r1 = await fetch(IMPROVE_URL, { headers: { Authorization: "Bearer " + token } });
+        const d1 = await r1.json();
+        if (Array.isArray(d1.items)) { imps = d1.items; setImprovements(d1.items); }
+      } catch (e) { void e; }
+      try {
+        const r2 = await fetch(INBOX_URL, { headers: { Authorization: "Bearer " + token } });
+        inbox = await r2.json();
+      } catch (e) { void e; }
+
+      const items = [];
+      // Verbeterpunten
+      if (imps.length) {
+        items.push({ icon: "\u2728", title: `${imps.length} verbeterpunt${imps.length > 1 ? "en" : ""} verzameld`, sub: "Bekijk wat NOVA wil verbeteren", prompt: "Vat de verbeterpunten kort samen die je hebt verzameld." });
+      }
+      // E-mail
+      if (inbox.connected && inbox.emails && inbox.emails.length) {
+        const urgent = inbox.emails.filter((e) => e.urgent).length;
+        items.push({ icon: "\ud83d\udce7", title: `${inbox.emails.length} nieuwe mail${inbox.emails.length > 1 ? "s" : ""}${urgent ? `, ${urgent} met aandacht` : ""}`, sub: "Open om te beantwoorden", prompt: "Geef een kort overzicht van de nieuwe e-mails en welke aandacht vragen." });
+      } else {
+        items.push({ icon: "\ud83d\udce7", title: "Mailkoppeling nog niet actief", sub: "Koppel Gmail of Outlook om mail te zien", prompt: "Hoe koppel ik mijn e-mail zodat jij binnenkomende mail kunt tonen?", muted: true });
+      }
+
+      setBriefing({ items, hour: new Date().getHours() });
+      // Toon de briefing alleen als er iets zinnigs te melden is.
+      setShowBriefing(true);
+    }
+    boot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function addImprovement(text) {
+    try {
+      const res = await fetch(IMPROVE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ text, source: "nova" }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setImprovements(d.items);
+    } catch (e) { void e; }
+  }
+
+  async function deleteImprovement(id, all) {
+    try {
+      const res = await fetch(IMPROVE_URL, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify(all ? { all: true } : { id }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setImprovements(d.items);
+    } catch (e) { void e; }
+  }
+
+  function copyImprovements() {
+    const txt =
+      "Verbeterpunten voor de Agent van JnA Events (verzameld door NOVA):\n\n" +
+      improvements.map((i, n) => `${n + 1}. ${i.text}`).join("\n") +
+      "\n\nGraag deze punten verwerken in de volgende update.";
+    navigator.clipboard?.writeText(txt).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   useEffect(() => {
     setIdleStars(Array.from({ length: 6 }, (_, i) => ({ id: "idle-" + i, ...orbitPos(), delay: Math.random() * 7, dur: 7 + Math.random() * 4, size: 5 + Math.random() * 4 })));
@@ -236,7 +318,7 @@ function Nova({ token, onLogout }) {
   }
 
   function startTask({ agent, title, brief }) {
-    const usedSlots = tasksRef.current.filter((t) => t.state !== "done").map((t) => t.slot);
+    const usedSlots = tasksRef.current.map((t) => t.slot);
     let slot = TASK_SLOTS.findIndex((_, i) => !usedSlots.includes(i));
     if (slot < 0) slot = 0;
     const id = "task-" + Date.now();
@@ -245,7 +327,7 @@ function Nova({ token, onLogout }) {
       setTasks((prev) => prev.map((t) => (t.id === id && t.state === "running" ? { ...t, progress: Math.min(t.progress + Math.random() * 9 + 3, 94) } : t)));
     }, 700);
     callBackend([{ role: "user", content: brief }], "worker")
-      .then((result) => { clearInterval(prog); setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, progress: 100, state: "done", result, chat: [{ role: "assistant", content: result }] } : t))); })
+      .then((result) => { clearInterval(prog); setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, progress: 100, state: "awaiting", result, chat: [{ role: "assistant", content: result }] } : t))); })
       .catch(() => { clearInterval(prog); setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, state: "error", result: "Deze taak kon niet worden afgerond." } : t))); });
   }
 
@@ -256,12 +338,13 @@ function Nova({ token, onLogout }) {
     setMessages(next); setInput(""); setBusy(true); setActions([]); setStatus("NOVA denkt na...");
     try {
       const raw = await callBackend(next.map((m) => ({ role: m.role, content: m.content })));
-      const { reply, actions: acts, task } = parseReply(raw);
+      const { reply, actions: acts, task, improve } = parseReply(raw);
       const finalReply = reply || "Sorry, ik kon even niet reageren.";
       setMessages((p) => [...p, { role: "assistant", content: finalReply }]);
       setStatus("Online \u00b7 klaar voor je opdracht");
       speak(finalReply);
       if (task) startTask(task);
+      if (improve) addImprovement(improve);
       if (acts.length) setTimeout(() => placeActions(acts), 400);
     } catch (err) {
       setMessages((p) => [...p, { role: "assistant", content: "Er ging iets mis: " + (err.message || "onbekende fout") }]);
@@ -288,6 +371,36 @@ function Nova({ token, onLogout }) {
   }
 
   function dismissTask(id) { setTasks((prev) => prev.filter((t) => t.id !== id)); if (openTask === id) setOpenTask(null); }
+
+  // Goedkeuren: pas hier komt straks de echte koppeling (Instagram/WhatsApp plaatsen).
+  function approveTask(id) {
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, state: "approved", chat: [...t.chat, { role: "assistant", content: "Goedgekeurd. Zodra de koppeling met het juiste kanaal actief is, plaats ik dit automatisch. Tot die tijd staat het klaar." }] } : t)));
+  }
+
+  // Afkeuren: terug naar de agent met jouw feedback, die maakt een nieuwe versie.
+  async function rejectTask(id, feedback) {
+    const task = tasksRef.current.find((t) => t.id === id);
+    if (!task) return;
+    const note = (feedback && feedback.trim()) || "Niet akkoord, maak een betere versie.";
+    const newChat = [...task.chat, { role: "user", content: note }];
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, state: "running", progress: 20, chat: newChat, thinking: true } : t)));
+    const prog = setInterval(() => {
+      setTasks((prev) => prev.map((t) => (t.id === id && t.state === "running" ? { ...t, progress: Math.min(t.progress + Math.random() * 9 + 3, 94) } : t)));
+    }, 700);
+    try {
+      const reply = await callBackend(newChat.map((m) => ({ role: m.role, content: m.content })), "worker");
+      clearInterval(prog);
+      setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, state: "awaiting", progress: 100, thinking: false, chat: [...newChat, { role: "assistant", content: reply }] } : t)));
+    } catch {
+      clearInterval(prog);
+      setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, state: "error", thinking: false } : t)));
+    }
+  }
+
+  function openBriefingItem(it) {
+    setShowBriefing(false);
+    if (it.prompt) sendMessage(it.prompt);
+  }
 
   const orbState = speaking ? "speaking" : busy ? "thinking" : listening ? "listening" : "idle";
   const stateLabel = { speaking: "NOVA spreekt...", thinking: "NOVA denkt na...", listening: "NOVA luistert...", idle: "NOVA staat klaar" }[orbState];
@@ -332,6 +445,10 @@ function Nova({ token, onLogout }) {
           <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", letterSpacing: 1 }}>NOVA \u00b7 engineering &amp; design</div>
         </div>
         <button onClick={toggleVoice} aria-label="Stem aan of uit" style={{ marginLeft: "auto", width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: voiceOn ? "rgba(56,230,255,.12)" : "transparent", color: voiceOn ? CYAN : "rgba(180,210,255,.5)", cursor: "pointer", fontSize: 15 }}>{voiceOn ? "\ud83d\udd0a" : "\ud83d\udd07"}</button>
+        <button onClick={() => setShowImprove(true)} title="Verbeterlijst van NOVA" style={{ position: "relative", height: 36, borderRadius: 18, border: "1px solid rgba(239,159,39,.4)", background: "rgba(239,159,39,.1)", color: AMBER, cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13 }}>\u2728</span> Verbeteringen
+          {improvements.length > 0 && (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: AMBER, color: "#04122B", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{improvements.length}</span>)}
+        </button>
         <button onClick={onLogout} title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>\u23fb</button>
         <div style={{ fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
       </header>
@@ -348,14 +465,14 @@ function Nova({ token, onLogout }) {
 
           {tasks.map((t) => {
             const slot = TASK_SLOTS[t.slot] || TASK_SLOTS[0];
-            const col = t.state === "done" ? "#1D9E75" : t.state === "error" ? "#E24B4A" : AMBER;
+            const col = t.state === "approved" ? "#1D9E75" : t.state === "awaiting" ? CYAN : t.state === "error" ? "#E24B4A" : AMBER;
             return (
               <div key={t.id} className="task-node" style={{ left: `${slot.x}%`, top: `${slot.y}%` }} onClick={() => setOpenTask(t.id)} role="button" tabIndex={0}>
                 <div className="task-card">
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                     <span style={{ fontSize: 13 }}>{agentIcon(t.agent)}</span>
                     <span style={{ fontSize: 10, color: "rgba(180,210,255,.7)", textTransform: "uppercase", letterSpacing: ".5px" }}>{t.agent}</span>
-                    <span style={{ marginLeft: "auto", fontSize: 9, color: col }}>{t.state === "done" ? "klaar" : t.state === "error" ? "fout" : Math.round(t.progress) + "%"}</span>
+                    <span style={{ marginLeft: "auto", fontSize: 9, color: col }}>{t.state === "approved" ? "goedgekeurd" : t.state === "awaiting" ? "akkoord?" : t.state === "error" ? "fout" : Math.round(t.progress) + "%"}</span>
                   </div>
                   <div style={{ fontSize: 11, color: "#E8F1FF", lineHeight: 1.3, marginBottom: 6, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{t.title}</div>
                   <div style={{ height: 3, borderRadius: 2, background: "rgba(255,255,255,.12)", overflow: "hidden" }}>
@@ -406,7 +523,7 @@ function Nova({ token, onLogout }) {
               <span style={{ fontSize: 18 }}>{agentIcon(activeTask.agent)}</span>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>{activeTask.title}</div>
-                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", textTransform: "uppercase", letterSpacing: ".5px" }}>{activeTask.agent}-agent \u00b7 {activeTask.state === "done" ? "voltooid" : activeTask.state === "error" ? "fout" : "bezig " + Math.round(activeTask.progress) + "%"}</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", textTransform: "uppercase", letterSpacing: ".5px" }}>{activeTask.agent}-agent \u00b7 {activeTask.state === "approved" ? "goedgekeurd" : activeTask.state === "awaiting" ? "wacht op je akkoord" : activeTask.state === "error" ? "fout" : "bezig " + Math.round(activeTask.progress) + "%"}</div>
               </div>
               <button onClick={() => dismissTask(activeTask.id)} title="Taak verwijderen" style={{ background: "transparent", border: "1px solid rgba(255,255,255,.2)", color: "rgba(180,210,255,.7)", borderRadius: 8, cursor: "pointer", padding: "4px 10px", fontSize: 12 }}>verwijder</button>
               <button onClick={() => setOpenTask(null)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
@@ -422,9 +539,85 @@ function Nova({ token, onLogout }) {
               {activeTask.chat.map((m, i) => (<div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "90%", padding: "10px 13px", borderRadius: m.role === "user" ? "12px 12px 4px 12px" : "12px 12px 12px 4px", background: m.role === "user" ? `linear-gradient(135deg, ${PURPLE}, #5A52B5)` : "rgba(56,230,255,.08)", border: m.role === "user" ? "none" : "1px solid rgba(56,230,255,.2)", fontSize: 13, lineHeight: 1.5, color: m.role === "user" ? "#fff" : "#DCEEFF", whiteSpace: "pre-wrap" }}>{m.content}</div>))}
               {activeTask.thinking && (<div style={{ alignSelf: "flex-start", padding: "10px 14px", borderRadius: "12px 12px 12px 4px", background: "rgba(56,230,255,.08)", border: "1px solid rgba(56,230,255,.2)", display: "flex", gap: 5 }}>{[0, 1, 2].map((d) => (<span key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: CYAN, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}</div>)}
             </div>
+            {activeTask.state === "awaiting" && (
+              <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.15)", background: "rgba(56,230,255,.04)" }}>
+                <div style={{ flex: 1, fontSize: 12, color: "rgba(180,210,255,.8)", alignSelf: "center" }}>NOVA is klaar. Geef je akkoord?</div>
+                <button onClick={() => rejectTask(activeTask.id, taskInput)} style={{ border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "9px 14px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Afkeuren</button>
+                <button onClick={() => approveTask(activeTask.id)} style={{ border: "none", borderRadius: 10, padding: "9px 16px", background: "linear-gradient(135deg, #1D9E75, #0F6E56)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Goedkeuren</button>
+              </div>
+            )}
+            {activeTask.state === "approved" && (
+              <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(29,158,117,.3)", background: "rgba(29,158,117,.08)", fontSize: 12, color: "#7FE3C0", display: "flex", alignItems: "center", gap: 8 }}>
+                <span>\u2713</span> Goedgekeurd. Klaar om te plaatsen zodra het kanaal gekoppeld is.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.1)" }}>
-              <input value={taskInput} onChange={(e) => setTaskInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendToTask(activeTask.id)} placeholder={activeTask.state === "running" ? "Even wachten tot de agent klaar is..." : "Stuur de agent een aanpassing of vraag..."} disabled={activeTask.state === "running"} style={{ flex: 1, background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 22, padding: "10px 15px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", opacity: activeTask.state === "running" ? 0.5 : 1 }} />
+              <input value={taskInput} onChange={(e) => setTaskInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendToTask(activeTask.id)} placeholder={activeTask.state === "running" ? "Even wachten tot de agent klaar is..." : activeTask.state === "awaiting" ? "Typ feedback en klik Afkeuren, of keur goed..." : "Stuur de agent een aanpassing of vraag..."} disabled={activeTask.state === "running"} style={{ flex: 1, background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 22, padding: "10px 15px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", opacity: activeTask.state === "running" ? 0.5 : 1 }} />
               <button onClick={() => sendToTask(activeTask.id)} disabled={activeTask.state === "running"} aria-label="Sturen" style={{ width: 40, height: 40, borderRadius: "50%", border: "none", background: `linear-gradient(135deg, ${CYAN}, ${PURPLE})`, color: "#04122B", cursor: "pointer", fontSize: 17, flexShrink: 0, opacity: activeTask.state === "running" ? 0.4 : 1, fontWeight: 700 }}>\u2191</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBriefing && briefing && (
+        <div onClick={() => setShowBriefing(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 22, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(460px, 100%)", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid rgba(56,230,255,.12)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: CYAN, boxShadow: `0 0 10px ${CYAN}`, animation: "pulse 2s infinite" }} />
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>{briefing.hour < 12 ? "Goedemorgen" : briefing.hour < 18 ? "Goedemiddag" : "Goedenavond"}</div>
+                <button onClick={() => setShowBriefing(false)} aria-label="Sluiten" style={{ marginLeft: "auto", background: "transparent", border: "none", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+              </div>
+              <div style={{ fontSize: 12, color: "rgba(180,210,255,.6)", marginTop: 4 }}>Dit staat er voor je klaar. Tik een punt aan om het meteen af te handelen.</div>
+            </div>
+            <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {briefing.items.map((it, i) => (
+                <div key={i} onClick={() => openBriefingItem(it)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && openBriefingItem(it)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(56,230,255,.18)", background: it.muted ? "rgba(255,255,255,.03)" : "rgba(56,230,255,.06)", cursor: "pointer", opacity: it.muted ? 0.75 : 1 }}>
+                  <span style={{ fontSize: 18 }}>{it.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", fontWeight: 500 }}>{it.title}</div>
+                    <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", marginTop: 1 }}>{it.sub}</div>
+                  </div>
+                  <span style={{ color: "rgba(180,210,255,.5)", fontSize: 16 }}>\u203a</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ padding: "0 14px 16px" }}>
+              <button onClick={() => setShowBriefing(false)} style={{ width: "100%", border: "1px solid rgba(56,230,255,.25)", borderRadius: 10, padding: "10px", background: "transparent", color: "rgba(180,210,255,.8)", fontSize: 13, cursor: "pointer" }}>Aan de slag</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImprove && (
+        <div onClick={() => setShowImprove(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 21, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "82vh", background: "#06182F", border: "1px solid rgba(239,159,39,.35)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid rgba(239,159,39,.2)" }}>
+              <span style={{ fontSize: 18 }}>\u2728</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Verbeterlijst</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Ideeen die NOVA zelf verzamelt voor de volgende update</div>
+              </div>
+              <button onClick={() => setShowImprove(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8, minHeight: 120 }}>
+              {improvements.length === 0 && (
+                <div style={{ fontSize: 13, color: "rgba(180,210,255,.55)", lineHeight: 1.6, textAlign: "center", padding: "30px 10px" }}>Nog geen verbeterpunten. NOVA voegt hier vanzelf ideeen toe zodra haar iets opvalt dat beter of nieuwer gebouwd kan worden.</div>
+              )}
+              {improvements.map((it) => (
+                <div key={it.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "rgba(239,159,39,.06)", border: "1px solid rgba(239,159,39,.2)", borderRadius: 10 }}>
+                  <span style={{ color: AMBER, fontSize: 13, marginTop: 1 }}>\u2728</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.5 }}>{it.text}</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.4)", marginTop: 3 }}>{new Date(it.date).toLocaleString("nl-NL")}</div>
+                  </div>
+                  <button onClick={() => deleteImprovement(it.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.4)", cursor: "pointer", fontSize: 15 }}>\u00d7</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(239,159,39,.2)" }}>
+              <button onClick={copyImprovements} disabled={improvements.length === 0} style={{ flex: 1, border: "none", borderRadius: 10, padding: "10px", background: improvements.length ? `linear-gradient(135deg, ${AMBER}, #BA7517)` : "rgba(255,255,255,.08)", color: improvements.length ? "#04122B" : "rgba(180,210,255,.4)", fontSize: 13, fontWeight: 700, cursor: improvements.length ? "pointer" : "not-allowed" }}>{copied ? "Gekopieerd!" : "Kopieer voor Claude"}</button>
+              {improvements.length > 0 && (<button onClick={() => deleteImprovement(null, true)} title="Hele lijst wissen" style={{ border: "1px solid rgba(255,255,255,.2)", borderRadius: 10, padding: "10px 14px", background: "transparent", color: "rgba(180,210,255,.7)", fontSize: 12, cursor: "pointer" }}>Wis alles</button>)}
             </div>
           </div>
         </div>
