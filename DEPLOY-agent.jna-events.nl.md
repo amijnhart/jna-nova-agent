@@ -323,3 +323,56 @@ NOVA haalt mail op bij login en bij handmatige checks. Echt LIVE binnenkomende
 mail die meteen verwerkt wordt vereist een achtergrondproces dat constant draait,
 en dat past niet in serverless. Voor 95% van de gebruikssituaties is ophalen
 bij login even praktisch.
+
+=====================================================================
+MULTI-AGENT CONTENT WORKFLOW + AI-BEELDGENERATIE (nieuw)
+=====================================================================
+
+Vraag NOVA om content (bijv. "maak TikTok-content voor de nieuwe rookmachine")
+en er starten vier gespecialiseerde agents tegelijk:
+
+   Marketing Director - bepaalt hoek, doelgroep en gewenste actie
+   Content Creator     - schrijft hook, caption en hashtags
+   Visual Director     - bedenkt drie visual-concepten met prompts
+   Video Director      - levert shotlist en regie-script voor video
+
+Resultaat verschijnt als post-paneel met alle vier de blokken. De drie
+visual-concepten zijn klikbaar: klik om er echt een AI-beeld van te
+genereren via OpenAI's gpt-image-1.
+
+Goedkeur de post en hij gaat automatisch in de Contentkalender.
+
+----- AI-BEELDGENERATIE INSTELLEN -----
+
+In Vercel Environment Variables:
+   OPENAI_API_KEY     je sleutel van platform.openai.com (begint met sk-)
+
+Maak een sleutel op platform.openai.com > API keys > Create new secret key.
+Zet daar OOK een credit-limiet om verrassingen te voorkomen
+(Settings > Billing > Usage limits).
+
+KOSTEN per beeld (november 2025, kan veranderen):
+   Low quality:    ~$0,02 per beeld
+   Medium quality: ~$0,07 per beeld (standaard in deze app)
+   High quality:   ~$0,19 per beeld
+
+Beelden worden ALLEEN gegenereerd als je in het post-paneel op een
+visual-tegel klikt. Nooit automatisch. Vooraf zie je de geschatte prijs.
+
+----- WAT JE NU ECHT KRIJGT -----
+
+Voorbeeld: "Maak TikTok-content voor de nieuwe rookmachine"
+- Strategische hoek + doelgroep (door Marketing Director)
+- Hook + caption + hashtags (door Content Creator)
+- 3 verticale 1024x1536 visual-concepten klaar voor generatie
+- Compleet shotlist + voice-over tekst (door Video Director)
+
+VIDEO blijft (eerlijk) handwerk: NOVA levert het regie-script + shotlist
+zodat jij of een videobewerker dit met je telefoon kunt opnemen. Echte
+AI-videogeneratie is nog niet professioneel genoeg voor productvideo's.
+
+----- ZONDER OPENAI_API_KEY -----
+
+Werkt alles behalve het genereren van de beelden zelf. De drie visual-
+concepten met prompts zijn er wel, je kunt ze gebruiken in andere tools
+(Midjourney, Stable Diffusion, of zelfs als briefing voor een fotograaf).

@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken } from "./_auth.js";
-import config from "./_config.js";
+import { CONFIG } from "./_config.js";
 
 // De sleutel staat in de omgevingsvariabelen van Vercel (ANTHROPIC_API_KEY), nooit in de code.
 
@@ -25,7 +25,7 @@ const SYSTEM_PROMPT =
   "VERBETER: korte concrete omschrijving van wat er verbeterd of toegevoegd zou moeten worden. " +
   "Doe dit uit jezelf wanneer het je opvalt, zonder dat de eigenaar erom vraagt. Maximaal een VERBETER-regel per antwoord. " +
   "Sluit je antwoord ALTIJD af met een regel: ACTIES: gevolgd door drie tot vier korte vervolgacties, gescheiden door | . " +
-  "Hou elke actie onder de vijf woorden. De ACTIES-, TAAK- en VERBETER-regels worden niet voorgelezen. WHATSAPP: als de gebruiker expliciet vraagt om een WhatsApp-bericht te sturen, voeg dan een aparte regel toe: STUUR_WA: telefoonnummer | berichttekst. Het nummer moet in internationaal formaat zijn (bijv. +31612345678). Doe dit ALLEEN op directe vraag van de gebruiker. Vraag eerst om akkoord als het bericht naar een klant gaat. De STUUR_WA-regel wordt niet voorgelezen. Als de gebruiker vraagt om content in te plannen of op een bepaald moment te posten, voeg dan een aparte regel toe: PLAN: kanaal | titel | ISO-datumtijd | korte omschrijving. Kies kanaal uit: tiktok, instagram, facebook, social. Gebruik voor de datumtijd het formaat JJJJ-MM-DDTHH:MM. Stel een logisch optimaal tijdstip voor als de gebruiker geen tijd noemt. De PLAN-regel wordt niet voorgelezen.";
+  "Hou elke actie onder de vijf woorden. De ACTIES-, TAAK- en VERBETER-regels worden niet voorgelezen. WHATSAPP: als de gebruiker expliciet vraagt om een WhatsApp-bericht te sturen, voeg dan een aparte regel toe: STUUR_WA: telefoonnummer | berichttekst. Het nummer moet in internationaal formaat zijn (bijv. +31612345678). Doe dit ALLEEN op directe vraag van de gebruiker. Vraag eerst om akkoord als het bericht naar een klant gaat. De STUUR_WA-regel wordt niet voorgelezen. POST-WORKFLOW: als de gebruiker vraagt om CONTENT voor een specifiek kanaal (zoals 'maak TikTok-content voor de nieuwe rookmachine' of 'maak een Instagram-post over het zomerfeest'), dan is dat geen gewone TAAK maar een volledige multi-agent workflow. Voeg in dat geval EEN aparte regel toe: POST: kanaal | onderwerp in 1 zin. Voorbeeld: POST: tiktok | nieuwe rookmachine in actie tijdens een event. Gebruik POST ALLEEN voor complete contentposts (tekst+beeld+regie samen), niet voor alleen tekst. De POST-regel wordt niet voorgelezen. Als de gebruiker vraagt om content in te plannen of op een bepaald moment te posten, voeg dan een aparte regel toe: PLAN: kanaal | titel | ISO-datumtijd | korte omschrijving. Kies kanaal uit: tiktok, instagram, facebook, social. Gebruik voor de datumtijd het formaat JJJJ-MM-DDTHH:MM. Stel een logisch optimaal tijdstip voor als de gebruiker geen tijd noemt. De PLAN-regel wordt niet voorgelezen.";
 
 const WORKER_PROMPT =
   "Je bent een gespecialiseerde agent van JnA Events. Voer de opdracht volledig en concreet uit. " +
@@ -43,7 +43,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Niet ingelogd. Log opnieuw in." });
   }
 
-  const apiKey = config.get("ANTHROPIC_API_KEY");
+  const apiKey = CONFIG.anthropicKey();
   if (!apiKey) {
     console.error("ANTHROPIC_API_KEY ontbreekt in Vercel.");
     return res.status(500).json({

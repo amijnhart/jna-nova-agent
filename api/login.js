@@ -1,5 +1,4 @@
 import crypto from "crypto";
-import config from "./_config.js";
 
 // Beveiligde login. Het wachtwoord staat ALLEEN in Vercel (Environment Variables)
 // als NOVA_PASSWORD, nooit in de code. De controle gebeurt hier serverside.
@@ -19,8 +18,8 @@ export default function handler(req, res) {
     return res.status(405).json({ error: "Alleen POST" });
   }
 
-  const expected = config.get("NOVA_PASSWORD");
-  const secret = config.get("NOVA_SECRET") || expected || "";
+  const expected = process.env.NOVA_PASSWORD;
+  const secret = process.env.NOVA_SECRET || expected || "";
 
   if (!expected) {
     return res.status(500).json({
@@ -34,17 +33,22 @@ export default function handler(req, res) {
     return res.status(400).json({ error: "Vul een wachtwoord in." });
   }
 
-  // Constante-tijd vergelijking om timing-aanvallen te voorkomen.
-  const a = Buffer.from(password);
-  const b = Buffer.from(expected);
-  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  try {
+    // Constante-tijd vergelijking om timing-aanvallen te voorkomen.
+    const a = Buffer.from(password);
+    const b = Buffer.from(expected);
+    const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
 
-  if (!ok) {
-    return res.status(401).json({ error: "Onjuist wachtwoord." });
+    if (!ok) {
+      return res.status(401).json({ error: "Onjuist wachtwoord." });
+    }
+
+    // Token geldig voor 30 dagen.
+    const exp = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    const token = sign({ ok: true, exp }, secret);
+    return res.status(200).json({ token });
+  } catch (err) {
+    console.error("Login fout:", err.message);
+    return res.status(500).json({ error: "Inlogcontrole faalde: " + err.message });
   }
-
-  // Token geldig voor 30 dagen.
-  const exp = Date.now() + 30 * 24 * 60 * 60 * 1000;
-  const token = sign({ ok: true, exp }, secret);
-  res.status(200).json({ token });
 }

@@ -12,6 +12,8 @@ const CATALOG_URL = "/api/catalog";
 const CALENDAR_URL = "/api/calendar";
 const ONBOARDING_URL = "/api/onboarding";
 const WHATSAPP_URL = "/api/whatsapp-send";
+const POST_WORKFLOW_URL = "/api/post-workflow";
+const IMAGE_URL = "/api/image-generate";
 const TOKEN_KEY = "nova_token";
 // Naam voor de begroeting. Stel in via Vercel: VITE_NOVA_NAME (bijv. "Jordi").
 const NOVA_NAME = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_NOVA_NAME) || "";
@@ -42,6 +44,7 @@ function parseReply(raw) {
   let improve = null;
   let plan = null;
   let whatsapp = null;
+  let post = null;
   const kept = [];
   for (const line of lines) {
     const a = line.match(/^\s*ACTIES\s*:\s*(.+)$/i);
@@ -49,6 +52,7 @@ function parseReply(raw) {
     const v = line.match(/^\s*VERBETER\s*:\s*(.+)$/i);
     const p = line.match(/^\s*PLAN\s*:\s*(.+)$/i);
     const w = line.match(/^\s*STUUR_WA\s*:\s*(.+)$/i);
+    const ps = line.match(/^\s*POST\s*:\s*(.+)$/i);
     if (a) {
       actions = a[1].split("|").map((s) => s.trim()).filter(Boolean).slice(0, 4);
     } else if (t) {
@@ -62,11 +66,14 @@ function parseReply(raw) {
     } else if (w) {
       const parts = w[1].split("|").map((s) => s.trim());
       if (parts.length >= 2) whatsapp = { to: parts[0], message: parts.slice(1).join(" | ") };
+    } else if (ps) {
+      const parts = ps[1].split("|").map((s) => s.trim());
+      if (parts.length >= 2) post = { channel: parts[0], topic: parts[1] };
     } else {
       kept.push(line);
     }
   }
-  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp };
+  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post };
 }
 
 function orbitPos() {
@@ -190,6 +197,8 @@ function Nova({ token, onLogout }) {
   const [showOnboard, setShowOnboard] = useState(false);
   const [openOnboard, setOpenOnboard] = useState(null);
   const [pendingWA, setPendingWA] = useState(null); // {to, message} wachtend op akkoord
+  const [posts, setPosts] = useState([]); // multi-agent contentposts
+  const [openPost, setOpenPost] = useState(null); // post-id dat geopend is
   const [prodName, setProdName] = useState("");
   const [prodCat, setProdCat] = useState("");
   const catalogRef = useRef([]);
@@ -398,6 +407,93 @@ function Nova({ token, onLogout }) {
     }
   }
 
+  // Start de multi-agent contentpost workflow. De vier agents (strategie,
+  // copywriter, visual, regie) werken parallel via post-workflow.js.
+  async function startPostWorkflow({ channel, topic }) {
+    const id = "post-mag-" + Date.now();
+    const placeholder = {
+      id,
+      channel,
+      topic,
+      state: "running",
+      created: new Date().toISOString(),
+      strategie: "",
+      copy: "",
+      visual: "",
+      regie: "",
+      imagePrompts: [],
+      images: [], // {prompt, image (base64), state}
+    };
+    setPosts((prev) => [placeholder, ...prev]);
+    setOpenPost(id);
+
+    try {
+      const res = await fetch(POST_WORKFLOW_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ channel, topic, catalog: catalogRef.current }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "workflow fout");
+      setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, ...d, state: "awaiting" } : p)));
+    } catch (err) {
+      setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, state: "error", error: err.message } : p)));
+    }
+  }
+
+  // Genereer een AI-beeld voor een specifieke visual-prompt binnen een post.
+  async function generateImage(postId, promptIndex) {
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+    const prompt = post.imagePrompts[promptIndex];
+    if (!prompt) return;
+
+    // Markeer als genereert
+    setPosts((prev) => prev.map((p) => {
+      if (p.id !== postId) return p;
+      const images = [...(p.images || [])];
+      images[promptIndex] = { prompt, state: "generating", image: null };
+      return { ...p, images };
+    }));
+
+    try {
+      const size = post.channel === "tiktok" || post.channel === "instagram" ? "1024x1536" : "1024x1024";
+      const res = await fetch(IMAGE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ prompt, size, quality: "medium" }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.hint || d.error || "beeld mislukte");
+      setPosts((prev) => prev.map((p) => {
+        if (p.id !== postId) return p;
+        const images = [...(p.images || [])];
+        images[promptIndex] = { prompt, state: "done", image: d.image };
+        return { ...p, images };
+      }));
+    } catch (err) {
+      setPosts((prev) => prev.map((p) => {
+        if (p.id !== postId) return p;
+        const images = [...(p.images || [])];
+        images[promptIndex] = { prompt, state: "error", error: err.message };
+        return { ...p, images };
+      }));
+    }
+  }
+
+  function approveContentPost(postId) {
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+    // Zet de post als goedgekeurd in de kalender
+    addToCalendar({
+      channel: post.channel,
+      title: post.topic,
+      when: new Date().toISOString(),
+      body: post.copy || post.topic,
+    });
+    setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, state: "approved" } : p)));
+  }
+
   useEffect(() => {
     setIdleStars(Array.from({ length: 6 }, (_, i) => ({ id: "idle-" + i, ...orbitPos(), delay: Math.random() * 7, dur: 7 + Math.random() * 4, size: 5 + Math.random() * 4 })));
     const iv = setInterval(() => { setIdleStars((prev) => prev.map((s) => (Math.random() < 0.4 ? { ...s, ...orbitPos() } : s))); }, 3500);
@@ -490,7 +586,7 @@ function Nova({ token, onLogout }) {
     setMessages(next); setInput(""); setBusy(true); setActions([]); setStatus("NOVA denkt na...");
     try {
       const raw = await callBackend(next.map((m) => ({ role: m.role, content: m.content })));
-      const { reply, actions: acts, task, improve, plan, whatsapp } = parseReply(raw);
+      const { reply, actions: acts, task, improve, plan, whatsapp, post } = parseReply(raw);
       const finalReply = reply || "Sorry, ik kon even niet reageren.";
       setMessages((p) => [...p, { role: "assistant", content: finalReply }]);
       setStatus("Online \u00b7 klaar voor je opdracht");
@@ -499,6 +595,7 @@ function Nova({ token, onLogout }) {
       if (improve) addImprovement(improve);
       if (plan) addToCalendar(plan);
       if (whatsapp) setPendingWA(whatsapp);
+      if (post) startPostWorkflow(post);
       if (acts.length) setTimeout(() => placeActions(acts), 400);
     } catch (err) {
       setMessages((p) => [...p, { role: "assistant", content: "Er ging iets mis: " + (err.message || "onbekende fout") }]);
@@ -621,6 +718,12 @@ function Nova({ token, onLogout }) {
             return open > 0 ? (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: "rgba(180,210,255,.25)", color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{open}</span>) : null;
           })()}
         </button>
+        {posts.length > 0 && (
+          <button onClick={() => setOpenPost(posts[0].id)} title="Lopende contentposts" style={{ height: 36, borderRadius: 18, border: "1px solid rgba(56,230,255,.4)", background: "rgba(56,230,255,.12)", color: CYAN, cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 13 }}>\ud83c\udfa8</span> Posts
+            <span style={{ minWidth: 16, height: 16, borderRadius: 8, background: CYAN, color: "#04122B", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{posts.length}</span>
+          </button>
+        )}
         <button onClick={onLogout} title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>\u23fb</button>
         <div style={{ fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
       </header>
@@ -915,6 +1018,94 @@ function Nova({ token, onLogout }) {
           </div>
         </div>
       )}
+
+      {openPost && (() => {
+        const post = posts.find((p) => p.id === openPost);
+        if (!post) return null;
+        return (
+          <div onClick={() => setOpenPost(null)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 25, padding: 20 }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "min(720px, 100%)", maxHeight: "90vh", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: "1px solid rgba(56,230,255,.15)" }}>
+                <span style={{ fontSize: 22 }}>\ud83c\udfa8</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>{post.topic}</div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", textTransform: "uppercase", letterSpacing: ".5px" }}>{post.channel} \u00b7 {post.state === "running" ? "agents werken..." : post.state === "approved" ? "goedgekeurd" : post.state === "error" ? "fout" : "klaar voor goedkeuring"}</div>
+                </div>
+                <button onClick={() => setOpenPost(null)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+              </div>
+
+              {post.state === "running" && (
+                <div style={{ padding: "30px 20px", textAlign: "center" }}>
+                  <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 16 }}>
+                    {[0, 1, 2, 3].map((d) => (<span key={d} style={{ width: 8, height: 8, borderRadius: "50%", background: CYAN, animation: `pulse 1s ${d * 0.15}s infinite` }} />))}
+                  </div>
+                  <div style={{ fontSize: 13, color: "rgba(180,210,255,.75)" }}>Vier agents werken parallel: strategie, copy, visual, regie...</div>
+                </div>
+              )}
+
+              {post.state === "error" && (
+                <div style={{ padding: "20px", color: "#FF8FA3", fontSize: 13 }}>Workflow mislukte: {post.error || "onbekende fout"}</div>
+              )}
+
+              {(post.state === "awaiting" || post.state === "approved") && (
+                <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
+
+                    <div style={{ padding: "14px 16px", background: "rgba(127,119,221,.07)", border: "1px solid rgba(127,119,221,.25)", borderRadius: 12 }}>
+                      <div style={{ fontSize: 11, color: "#B3ADEE", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><span>\ud83d\udcca</span> Marketing Director</div>
+                      <div style={{ fontSize: 12, color: "#E8F1FF", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{post.strategie}</div>
+                    </div>
+
+                    <div style={{ padding: "14px 16px", background: "rgba(56,230,255,.06)", border: "1px solid rgba(56,230,255,.22)", borderRadius: 12 }}>
+                      <div style={{ fontSize: 11, color: CYAN, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><span>\u270d\ufe0f</span> Content Creator</div>
+                      <div style={{ fontSize: 12, color: "#E8F1FF", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{post.copy}</div>
+                    </div>
+
+                    <div style={{ padding: "14px 16px", background: "rgba(239,159,39,.07)", border: "1px solid rgba(239,159,39,.25)", borderRadius: 12 }}>
+                      <div style={{ fontSize: 11, color: AMBER, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><span>\ud83c\udfa8</span> Visual Director</div>
+                      <div style={{ fontSize: 12, color: "#E8F1FF", lineHeight: 1.6, whiteSpace: "pre-wrap", marginBottom: 12 }}>{post.visual}</div>
+                      {post.imagePrompts && post.imagePrompts.length > 0 && (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+                          {post.imagePrompts.map((p, i) => {
+                            const img = (post.images || [])[i];
+                            return (
+                              <div key={i} style={{ aspectRatio: post.channel === "tiktok" || post.channel === "instagram" ? "2/3" : "1/1", borderRadius: 10, background: "rgba(0,0,0,.3)", border: "1px solid rgba(239,159,39,.3)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", position: "relative", cursor: img?.image ? "default" : "pointer" }} onClick={() => { if (!img?.image && (!img || img.state !== "generating")) generateImage(post.id, i); }}>
+                                {img?.image && (<img src={img.image} alt="Visual" style={{ width: "100%", height: "100%", objectFit: "cover" }} />)}
+                                {img?.state === "generating" && (<div style={{ textAlign: "center" }}><div style={{ display: "flex", justifyContent: "center", gap: 4, marginBottom: 6 }}>{[0, 1, 2].map((d) => (<span key={d} style={{ width: 5, height: 5, borderRadius: "50%", background: AMBER, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}</div><div style={{ fontSize: 10, color: AMBER }}>Genereren...</div></div>)}
+                                {img?.state === "error" && (<div style={{ fontSize: 10, color: "#FF8FA3", padding: 10, textAlign: "center" }}>{img.error}</div>)}
+                                {!img && (<div style={{ textAlign: "center", padding: 12 }}><div style={{ fontSize: 22, marginBottom: 4 }}>\u2728</div><div style={{ fontSize: 10, color: AMBER, fontWeight: 600 }}>Klik om te genereren</div><div style={{ fontSize: 9, color: "rgba(180,210,255,.5)", marginTop: 2 }}>~10 cent</div></div>)}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ padding: "14px 16px", background: "rgba(29,158,117,.06)", border: "1px solid rgba(29,158,117,.22)", borderRadius: 12 }}>
+                      <div style={{ fontSize: 11, color: "#5DCAA5", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><span>\ud83c\udfa5</span> Video Director</div>
+                      <div style={{ fontSize: 12, color: "#E8F1FF", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{post.regie}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {post.state === "awaiting" && (
+                <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.15)", background: "rgba(56,230,255,.04)" }}>
+                  <div style={{ flex: 1, fontSize: 12, color: "rgba(180,210,255,.8)", alignSelf: "center" }}>Goedkeuren plaatst de post in je kalender.</div>
+                  <button onClick={() => setPosts((prev) => prev.filter((p) => p.id !== post.id))} style={{ border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "9px 14px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Verwijder</button>
+                  <button onClick={() => { approveContentPost(post.id); setOpenPost(null); }} style={{ border: "none", borderRadius: 10, padding: "9px 18px", background: "linear-gradient(135deg, #1D9E75, #0F6E56)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Goedkeuren \u2192 kalender</button>
+                </div>
+              )}
+
+              {post.state === "approved" && (
+                <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(29,158,117,.3)", background: "rgba(29,158,117,.08)", fontSize: 12, color: "#7FE3C0", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>\u2713</span> Goedgekeurd en in de contentkalender gezet.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {pendingWA && (
         <div onClick={() => setPendingWA(null)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>

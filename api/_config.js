@@ -22,6 +22,7 @@
 //   GMAIL_TOKEN / OUTLOOK_TOKEN        voor mail via officiele Google/MS API
 //   TWILIO_SID + TWILIO_TOKEN + TWILIO_FROM  voor WhatsApp via Twilio
 //   WHATSAPP_TOKEN + WHATSAPP_PHONE_ID       voor WhatsApp via 360dialog
+//   OPENAI_API_KEY                           voor AI-beeldgeneratie (DALL-E / gpt-image-1)
 //   TIKTOK_TOKEN                  voor TikTok Business posten
 //   META_ACCESS_TOKEN             voor Instagram en Facebook posten
 // ============================================================================
@@ -37,6 +38,8 @@ export const CONFIG = {
     return null;
   },
   hasIMAP: () => !!(process.env.IMAP_HOST && process.env.IMAP_USER && process.env.IMAP_PASS),
+  hasImageGen: () => !!process.env.OPENAI_API_KEY,
+  openaiKey: () => process.env.OPENAI_API_KEY || "",
   hasTikTok: () => !!process.env.TIKTOK_TOKEN,
   hasMeta: () => !!process.env.META_ACCESS_TOKEN,
 };
