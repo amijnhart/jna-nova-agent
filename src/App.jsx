@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { Analytics } from "@vercel/analytics/react";
 
 const CYAN = "#38E6FF";
 const PURPLE = "#7F77DD";
@@ -135,8 +136,18 @@ export default function App() {
     try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) { void e; }
   }
 
-  if (!token) return <LoginScreen onLogin={handleLogin} />;
-  return <Nova token={token} onLogout={logout} />;
+  if (!token) return (
+    <>
+      <LoginScreen onLogin={handleLogin} />
+      <Analytics />
+    </>
+  );
+  return (
+    <>
+      <Nova token={token} onLogout={logout} />
+      <Analytics />
+    </>
+  );
 }
 
 function Nova({ token, onLogout }) {
