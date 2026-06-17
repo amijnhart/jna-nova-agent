@@ -13,6 +13,9 @@ app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
 // De API-sleutel staat ALLEEN hier, serverside, in je .env bestand. Nooit in de browser.
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.warn("LET OP: ANTHROPIC_API_KEY ontbreekt. Vul je .env bestand. NOVA kan niet antwoorden zonder sleutel.");
+}
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const SYSTEM_PROMPT =

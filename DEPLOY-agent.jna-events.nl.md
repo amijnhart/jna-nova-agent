@@ -108,3 +108,27 @@ Belangrijk over je API-sleutel en kosten
 - Omdat de pagina openbaar is, kan in principe iedereen NOVA gebruiken en
   dus je tegoed verbruiken. Overweeg een simpele toegangsbeveiliging
   (wachtwoord) voordat je de link breed deelt. Vraag hierom als je dat wilt.
+
+=====================================================================
+TOEGANGSBEVEILIGING (wachtwoord)
+=====================================================================
+
+NOVA staat nu achter een wachtwoordscherm. Niemand kan de agent gebruiken
+(en dus jouw API-tegoed verbruiken) zonder het wachtwoord.
+
+Instellen in Vercel:
+1. Settings > Environment Variables
+2. Voeg toe:
+      Naam:  NOVA_PASSWORD
+      Waarde: een sterk wachtwoord naar keuze (deel dit alleen met je team)
+3. Voeg ook toe (voor extra veiligheid van de sessie):
+      Naam:  NOVA_SECRET
+      Waarde: een lange willekeurige tekst (bijv. 30+ tekens, maakt niet uit wat)
+4. Beide op scope Production.
+5. Deploy opnieuw ZONDER build-cache (Deployments > ... > Redeploy,
+   vinkje "Use existing Build Cache" UIT).
+
+Vanaf nu: bezoekers zien eerst een wachtwoordscherm. Na het juiste wachtwoord
+blijven ze 30 dagen ingelogd (op dat apparaat). Rechtsboven zit een uitlog-knop.
+
+Wachtwoord wijzigen? Pas NOVA_PASSWORD aan in Vercel en deploy opnieuw.
