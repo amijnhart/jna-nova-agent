@@ -9,6 +9,8 @@ const LOGIN_URL = "/api/login";
 const IMPROVE_URL = "/api/improvements";
 const INBOX_URL = "/api/inbox";
 const TOKEN_KEY = "nova_token";
+// Naam voor de begroeting. Stel in via Vercel: VITE_NOVA_NAME (bijv. "Jordi").
+const NOVA_NAME = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_NOVA_NAME) || "";
 
 function cleanForSpeech(text) {
   return text
@@ -164,8 +166,9 @@ function Nova({ token, onLogout }) {
   const [improvements, setImprovements] = useState([]);
   const [showImprove, setShowImprove] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [briefing, setBriefing] = useState(null);
-  const [showBriefing, setShowBriefing] = useState(false);
+  const [history, setHistory] = useState([]); // afgeronde activiteiten (historie-overzicht)
+  const [showHistory, setShowHistory] = useState(false);
+  const greetedRef = useRef(false);
 
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -175,11 +178,15 @@ function Nova({ token, onLogout }) {
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, busy]);
 
-  // Bij het inloggen: haal verbeterpunten + mailstatus op en stel een korte briefing samen.
+  // Bij het inloggen: NOVA spreekt een korte begroeting uit, zet openstaande acties
+  // rond de cirkel, en schakelt dan terug naar luistermodus. Geen pop-up.
   useEffect(() => {
     async function boot() {
+      if (greetedRef.current) return;
+      greetedRef.current = true;
+
       let imps = [];
-      let inbox = { connected: false, emails: [], note: "" };
+      let inbox = { connected: false, emails: [] };
       try {
         const r1 = await fetch(IMPROVE_URL, { headers: { Authorization: "Bearer " + token } });
         const d1 = await r1.json();
@@ -190,22 +197,39 @@ function Nova({ token, onLogout }) {
         inbox = await r2.json();
       } catch (e) { void e; }
 
-      const items = [];
-      // Verbeterpunten
-      if (imps.length) {
-        items.push({ icon: "\u2728", title: `${imps.length} verbeterpunt${imps.length > 1 ? "en" : ""} verzameld`, sub: "Bekijk wat NOVA wil verbeteren", prompt: "Vat de verbeterpunten kort samen die je hebt verzameld." });
-      }
-      // E-mail
+      const hour = new Date().getHours();
+      const groet = hour < 12 ? "Goedemorgen" : hour < 18 ? "Goedemiddag" : "Goedenavond";
+      const naam = (typeof NOVA_NAME === "string" && NOVA_NAME) || "";
+
+      // Bouw de samenvatting alleen uit wat NOVA echt weet.
+      const delen = [];
+      if (imps.length) delen.push(`${imps.length} verbeterpunt${imps.length > 1 ? "en die ik heb verzameld" : " dat ik heb verzameld"}`);
       if (inbox.connected && inbox.emails && inbox.emails.length) {
         const urgent = inbox.emails.filter((e) => e.urgent).length;
-        items.push({ icon: "\ud83d\udce7", title: `${inbox.emails.length} nieuwe mail${inbox.emails.length > 1 ? "s" : ""}${urgent ? `, ${urgent} met aandacht` : ""}`, sub: "Open om te beantwoorden", prompt: "Geef een kort overzicht van de nieuwe e-mails en welke aandacht vragen." });
-      } else {
-        items.push({ icon: "\ud83d\udce7", title: "Mailkoppeling nog niet actief", sub: "Koppel Gmail of Outlook om mail te zien", prompt: "Hoe koppel ik mijn e-mail zodat jij binnenkomende mail kunt tonen?", muted: true });
+        delen.push(`${inbox.emails.length} nieuwe mail${inbox.emails.length > 1 ? "s" : ""}${urgent ? `, waarvan ${urgent} je aandacht vragen` : ""}`);
       }
 
-      setBriefing({ items, hour: new Date().getHours() });
-      // Toon de briefing alleen als er iets zinnigs te melden is.
-      setShowBriefing(true);
+      let tekst = `${groet}${naam ? ", " + naam : ""}, welkom terug. `;
+      if (delen.length) {
+        tekst += "Sinds je laatste sessie heb ik " + delen.join(" en ") + ". Waar wil je mee beginnen?";
+      } else {
+        tekst += "Er zijn geen openstaande zaken die je aandacht vragen. Waar wil je mee beginnen?";
+      }
+      if (!inbox.connected) {
+        tekst += " Je mail en agenda zijn nog niet gekoppeld, dus die kan ik nog niet meenemen.";
+      }
+
+      // Toon de begroeting als bericht in de chat en spreek hem uit.
+      setMessages((p) => [...p, { role: "assistant", content: tekst }]);
+      speak(tekst);
+
+      // Zet relevante acties rond de cirkel (zonder bestaande te verwijderen).
+      const acts = [];
+      if (imps.length) acts.push("Vat de verbeterpunten samen");
+      if (inbox.connected && inbox.emails && inbox.emails.length) acts.push("Toon mails die aandacht vragen");
+      else acts.push("Koppel mijn e-mail");
+      acts.push("Wat kun je voor me doen?");
+      setTimeout(() => placeActions(acts.slice(0, 4)), 600);
     }
     boot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -374,6 +398,10 @@ function Nova({ token, onLogout }) {
 
   // Goedkeuren: pas hier komt straks de echte koppeling (Instagram/WhatsApp plaatsen).
   function approveTask(id) {
+    const task = tasksRef.current.find((t) => t.id === id);
+    if (task) {
+      setHistory((h) => [{ id: task.id, agent: task.agent, title: task.title, date: new Date().toISOString(), result: task.result }, ...h]);
+    }
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, state: "approved", chat: [...t.chat, { role: "assistant", content: "Goedgekeurd. Zodra de koppeling met het juiste kanaal actief is, plaats ik dit automatisch. Tot die tijd staat het klaar." }] } : t)));
   }
 
@@ -395,11 +423,6 @@ function Nova({ token, onLogout }) {
       clearInterval(prog);
       setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, state: "error", thinking: false } : t)));
     }
-  }
-
-  function openBriefingItem(it) {
-    setShowBriefing(false);
-    if (it.prompt) sendMessage(it.prompt);
   }
 
   const orbState = speaking ? "speaking" : busy ? "thinking" : listening ? "listening" : "idle";
@@ -448,6 +471,10 @@ function Nova({ token, onLogout }) {
         <button onClick={() => setShowImprove(true)} title="Verbeterlijst van NOVA" style={{ position: "relative", height: 36, borderRadius: 18, border: "1px solid rgba(239,159,39,.4)", background: "rgba(239,159,39,.1)", color: AMBER, cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 13 }}>\u2728</span> Verbeteringen
           {improvements.length > 0 && (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: AMBER, color: "#04122B", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{improvements.length}</span>)}
+        </button>
+        <button onClick={() => setShowHistory(true)} title="Historie van afgeronde taken" style={{ height: 36, borderRadius: 18, border: "1px solid rgba(29,158,117,.4)", background: "rgba(29,158,117,.1)", color: "#5DCAA5", cursor: "pointer", fontSize: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13 }}>\u2713</span> Historie
+          {history.length > 0 && (<span style={{ minWidth: 16, height: 16, borderRadius: 8, background: "#1D9E75", color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{history.length}</span>)}
         </button>
         <button onClick={onLogout} title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>\u23fb</button>
         <div style={{ fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
@@ -559,36 +586,6 @@ function Nova({ token, onLogout }) {
         </div>
       )}
 
-      {showBriefing && briefing && (
-        <div onClick={() => setShowBriefing(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 22, padding: 20 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(460px, 100%)", background: "#06182F", border: "1px solid rgba(56,230,255,.3)", borderRadius: 16, overflow: "hidden" }}>
-            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid rgba(56,230,255,.12)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 8, height: 8, borderRadius: "50%", background: CYAN, boxShadow: `0 0 10px ${CYAN}`, animation: "pulse 2s infinite" }} />
-                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>{briefing.hour < 12 ? "Goedemorgen" : briefing.hour < 18 ? "Goedemiddag" : "Goedenavond"}</div>
-                <button onClick={() => setShowBriefing(false)} aria-label="Sluiten" style={{ marginLeft: "auto", background: "transparent", border: "none", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
-              </div>
-              <div style={{ fontSize: 12, color: "rgba(180,210,255,.6)", marginTop: 4 }}>Dit staat er voor je klaar. Tik een punt aan om het meteen af te handelen.</div>
-            </div>
-            <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-              {briefing.items.map((it, i) => (
-                <div key={i} onClick={() => openBriefingItem(it)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && openBriefingItem(it)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(56,230,255,.18)", background: it.muted ? "rgba(255,255,255,.03)" : "rgba(56,230,255,.06)", cursor: "pointer", opacity: it.muted ? 0.75 : 1 }}>
-                  <span style={{ fontSize: 18 }}>{it.icon}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "#E8F1FF", fontWeight: 500 }}>{it.title}</div>
-                    <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", marginTop: 1 }}>{it.sub}</div>
-                  </div>
-                  <span style={{ color: "rgba(180,210,255,.5)", fontSize: 16 }}>\u203a</span>
-                </div>
-              ))}
-            </div>
-            <div style={{ padding: "0 14px 16px" }}>
-              <button onClick={() => setShowBriefing(false)} style={{ width: "100%", border: "1px solid rgba(56,230,255,.25)", borderRadius: 10, padding: "10px", background: "transparent", color: "rgba(180,210,255,.8)", fontSize: 13, cursor: "pointer" }}>Aan de slag</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showImprove && (
         <div onClick={() => setShowImprove(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 21, padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "82vh", background: "#06182F", border: "1px solid rgba(239,159,39,.35)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -618,6 +615,35 @@ function Nova({ token, onLogout }) {
             <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(239,159,39,.2)" }}>
               <button onClick={copyImprovements} disabled={improvements.length === 0} style={{ flex: 1, border: "none", borderRadius: 10, padding: "10px", background: improvements.length ? `linear-gradient(135deg, ${AMBER}, #BA7517)` : "rgba(255,255,255,.08)", color: improvements.length ? "#04122B" : "rgba(180,210,255,.4)", fontSize: 13, fontWeight: 700, cursor: improvements.length ? "pointer" : "not-allowed" }}>{copied ? "Gekopieerd!" : "Kopieer voor Claude"}</button>
               {improvements.length > 0 && (<button onClick={() => deleteImprovement(null, true)} title="Hele lijst wissen" style={{ border: "1px solid rgba(255,255,255,.2)", borderRadius: 10, padding: "10px 14px", background: "transparent", color: "rgba(180,210,255,.7)", fontSize: 12, cursor: "pointer" }}>Wis alles</button>)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showHistory && (
+        <div onClick={() => setShowHistory(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 21, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "82vh", background: "#06182F", border: "1px solid rgba(29,158,117,.35)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid rgba(29,158,117,.2)" }}>
+              <span style={{ fontSize: 18 }}>\u2713</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Afgeronde activiteiten</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Taken die je hebt goedgekeurd</div>
+              </div>
+              <button onClick={() => setShowHistory(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>\u00d7</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8, minHeight: 120 }}>
+              {history.length === 0 && (
+                <div style={{ fontSize: 13, color: "rgba(180,210,255,.55)", lineHeight: 1.6, textAlign: "center", padding: "30px 10px" }}>Nog geen afgeronde activiteiten. Zodra je een taak goedkeurt, verschijnt die hier in de historie.</div>
+              )}
+              {history.map((h) => (
+                <div key={h.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "rgba(29,158,117,.06)", border: "1px solid rgba(29,158,117,.2)", borderRadius: 10 }}>
+                  <span style={{ fontSize: 13 }}>{agentIcon(h.agent)}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.4 }}>{h.title}</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.4)", marginTop: 2 }}>{h.agent} \u00b7 {new Date(h.date).toLocaleString("nl-NL")}</div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

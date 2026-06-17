@@ -155,3 +155,34 @@ Hoe je de lijst gebruikt:
 - Klik "Kopieer voor Claude" en plak de lijst in een nieuw gesprek met
   Claude. Vraag om de punten te verwerken in een update. Daarna push je
   de nieuwe code met: npm run push
+
+=====================================================================
+JE NAAM IN DE BEGROETING
+=====================================================================
+
+NOVA begroet je bij het inloggen met "Goedemorgen/middag/avond, [naam],
+welkom terug." Vul je naam in via een variabele in Vercel:
+
+1. Settings > Environment Variables
+2. Voeg toe:
+      Naam:  VITE_NOVA_NAME
+      Waarde: je voornaam (bijv. Jordi)
+   Scope: Production. (De VITE_ vooraan is verplicht, anders ziet de app hem niet.)
+3. Deploy opnieuw zonder build-cache.
+
+Laat je dit leeg, dan zegt NOVA gewoon "Goedemorgen, welkom terug" zonder naam.
+
+=====================================================================
+OPSTARTGEDRAG VAN NOVA (nieuw)
+=====================================================================
+
+Na het inloggen begroet NOVA je nu hardop (geen pop-up meer) en geeft een
+korte samenvatting van wat aandacht vraagt. Daarna verschijnen klikbare acties
+rond de cirkel en schakelt NOVA terug naar luistermodus, zodat je meteen kunt
+antwoorden of een vervolgvraag kunt stellen.
+
+NOVA noemt alleen wat ze echt weet. Mail en agenda worden pas meegenomen zodra
+die gekoppeld zijn; tot die tijd zegt ze daar eerlijk over dat de koppeling
+nog moet komen, in plaats van verzonnen aantallen te noemen.
+
+Goedgekeurde taken verschijnen in het Historie-overzicht (knop rechtsboven).
