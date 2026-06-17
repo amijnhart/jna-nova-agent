@@ -1,0 +1,110 @@
+# NOVA live zetten op agent.jna-events.nl
+
+Je WordPress-site op jna-events.nl blijft volledig ongemoeid.
+NOVA komt op een apart subdomein: agent.jna-events.nl, gehost via Vercel.
+Volg deze vier fases in volgorde. Reken op 30 tot 60 minuten de eerste keer.
+
+Wat je nodig hebt:
+- Het uitgepakte project (deze map)
+- Een gratis GitHub-account (github.com)
+- Een gratis Vercel-account (vercel.com)
+- Een Anthropic API-sleutel (console.anthropic.com)
+- Toegang tot het DNS-beheer van jna-events.nl bij je hostingprovider
+
+=====================================================================
+FASE 1 - Project op GitHub zetten (eenmalig)
+=====================================================================
+
+1. Installeer Git als je dat nog niet hebt: https://git-scm.com
+2. Maak een account op https://github.com
+3. Klik rechtsboven op + en kies "New repository".
+   - Naam: jna-nova-agent
+   - Zet hem op Private als je wilt
+   - Vink NIETS aan (geen README, geen gitignore)
+   - Klik "Create repository"
+4. GitHub toont nu een adres dat eindigt op .git. Kopieer dat.
+5. Open een terminal in deze projectmap en typ (vervang JOUW-NAAM):
+
+   git init
+   git add .
+   git commit -m "NOVA agent eerste versie"
+   git branch -M main
+   git remote add origin https://github.com/JOUW-NAAM/jna-nova-agent.git
+   git push -u origin main
+
+   Het project staat nu op GitHub.
+
+=====================================================================
+FASE 2 - Vercel koppelen
+=====================================================================
+
+1. Ga naar https://vercel.com en log in met je GitHub-account.
+2. Klik "Add New" -> "Project".
+3. Kies je repository jna-nova-agent en klik "Import".
+4. Vercel herkent Vite automatisch. NIET op deploy klikken - eerst stap 5.
+5. Open "Environment Variables" en voeg toe:
+      Name:  ANTHROPIC_API_KEY
+      Value: je echte sleutel (begint met sk-ant-...)
+6. Klik "Deploy". Na een minuut krijg je een URL zoals
+   jna-nova-agent.vercel.app - test deze even, NOVA hoort hier te werken.
+
+=====================================================================
+FASE 3 - Subdomein koppelen in Vercel
+=====================================================================
+
+1. In Vercel: open je project -> Settings -> Domains.
+2. Typ:  agent.jna-events.nl  en klik "Add".
+3. Vercel toont nu welk DNS-record je moet aanmaken. Meestal:
+      Type:  CNAME
+      Naam:  agent
+      Waarde: cname.vercel-dns.com
+   Laat dit scherm open staan - je hebt deze waarde zo nodig.
+
+=====================================================================
+FASE 4 - DNS-record zetten bij je hostingprovider
+=====================================================================
+
+1. Log in bij je hostingprovider (waar jna-events.nl staat).
+2. Zoek het DNS-beheer of "DNS-records" van jna-events.nl.
+   (Bij TransIP: domein -> DNS. Bij Vimexx: DNS-beheer.
+    Bij SiteGround: Site Tools -> Domain -> DNS Zone Editor.)
+3. Voeg een nieuw record toe met exact de waarden uit Vercel (fase 3):
+      Type:  CNAME
+      Naam/Host:  agent
+      Waarde/Doel: cname.vercel-dns.com
+      TTL: laat standaard staan
+4. Sla op. Het doorvoeren duurt 10 minuten tot soms een paar uur.
+5. Ga terug naar Vercel. Zodra het record gevonden is, verschijnt er een
+   groen vinkje bij agent.jna-events.nl. Vercel regelt automatisch https.
+
+KLAAR. NOVA draait nu op https://agent.jna-events.nl
+
+=====================================================================
+In WordPress een knop naar NOVA zetten
+=====================================================================
+
+Wil je vanaf je gewone site naar NOVA kunnen?
+- WordPress -> Weergave -> Menu's -> "Aangepaste link"
+  URL: https://agent.jna-events.nl   Tekst: NOVA / AI-assistent
+- Of plaats ergens op een pagina een knop die naar die URL linkt.
+
+=====================================================================
+Verbeteringen later live zetten
+=====================================================================
+
+Na de eenmalige setup is elke wijziging maar 1 commando:
+
+   npm run push
+
+Dat commit en pusht naar GitHub. Vercel zet de nieuwe versie binnen een
+minuut vanzelf live op agent.jna-events.nl.
+
+=====================================================================
+Belangrijk over je API-sleutel en kosten
+=====================================================================
+
+- Je sleutel staat ALLEEN in Vercel (Environment Variables), nooit in de code.
+- Elk gesprek met NOVA kost een klein bedrag via je Anthropic-account.
+- Omdat de pagina openbaar is, kan in principe iedereen NOVA gebruiken en
+  dus je tegoed verbruiken. Overweeg een simpele toegangsbeveiliging
+  (wachtwoord) voordat je de link breed deelt. Vraag hierom als je dat wilt.
