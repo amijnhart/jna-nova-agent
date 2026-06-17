@@ -7,11 +7,11 @@ const AMBER = "#EF9F27";
 const CHAT_URL = "/api/chat";
 const LOGIN_URL = "/api/login";
 const IMPROVE_URL = "/api/improvements";
-const INBOX_URL = "/api/inbox";
+const INBOX_URL = "/api/mail?action=inbox";
 const CATALOG_URL = "/api/catalog";
 const CALENDAR_URL = "/api/calendar";
 const ONBOARDING_URL = "/api/onboarding";
-const WHATSAPP_URL = "/api/whatsapp-send";
+const WHATSAPP_URL = "/api/whatsapp?action=send";
 const POST_WORKFLOW_URL = "/api/post-workflow";
 const IMAGE_URL = "/api/image-generate";
 const TOKEN_KEY = "nova_token";
@@ -411,13 +411,13 @@ function Nova({ token, onLogout }) {
         if (Array.isArray(d5.items)) setOnboarding(d5.items);
       } catch (e) { void e; }
       try {
-        const r6 = await fetch("/api/imap-settings", { headers: { Authorization: "Bearer " + token } });
+        const r6 = await fetch("/api/mail?action=settings", { headers: { Authorization: "Bearer " + token } });
         const d6 = await r6.json();
         setImapCfg(d6);
       } catch (e) { void e; }
       let waInbox = [];
       try {
-        const r6 = await fetch("/api/whatsapp-inbox", { headers: { Authorization: "Bearer " + token } });
+        const r6 = await fetch("/api/whatsapp?action=inbox", { headers: { Authorization: "Bearer " + token } });
         const d6 = await r6.json();
         if (Array.isArray(d6.items)) waInbox = d6.items;
       } catch (e) { void e; }
@@ -559,7 +559,7 @@ function Nova({ token, onLogout }) {
 
   async function saveImapSettings(host, port, user, pass) {
     try {
-      const res = await fetch("/api/imap-settings", {
+      const res = await fetch("/api/mail?action=settings", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
         body: JSON.stringify({ host, port, user, pass }),
@@ -575,7 +575,7 @@ function Nova({ token, onLogout }) {
 
   async function clearImapSettings() {
     try {
-      const res = await fetch("/api/imap-settings", {
+      const res = await fetch("/api/mail?action=settings", {
         method: "DELETE",
         headers: { Authorization: "Bearer " + token },
       });
