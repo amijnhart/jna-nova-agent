@@ -2,21 +2,17 @@ import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken } from "./_auth.js";
 import { CONFIG } from "./_config.js";
 
-// Multi-agent workflow voor een complete social media post.
+// Multi-agent contentpost workflow in TWEE fases:
 //
-// Hoe het werkt:
-//   1. Frontend stuurt een briefing: kanaal, onderwerp, productcatalogus.
-//   2. Deze backend roept VIER gespecialiseerde agents parallel aan via Claude:
-//      - strategie-agent (hoek + doelgroep + call-to-action)
-//      - copywriter-agent (caption, hashtags, opening hook)
-//      - visual-agent (concrete beeldconcepten + image prompts)
-//      - regie-agent (videoscript + shotlist als het video-content is)
-//   3. Alle resultaten komen samen terug naar de frontend, die ze toont in
-//      een postcard waar jij ze ziet, kunt aanpassen of laten regenereren.
+//  Fase 1 (phase: "concept"): alleen de Marketing Director werkt.
+//    Hij levert: hoek, doelgroep, gewenste actie, en hoe de video er ongeveer uit ziet.
+//    Het concept gaat naar de gebruiker voor akkoord.
 //
-// Belangrijk: we genereren GEEN beelden in deze stap (te duur, jij beslist
-// wanneer). De visual-agent levert prompts; jij klikt later om er beelden
-// uit te genereren.
+//  Fase 2 (phase: "production"): pas na akkoord. Drie agents werken parallel.
+//    Content Creator (caption + hashtags), Visual Director (beeldconcepten + prompts),
+//    Video Director (shotlist + voice-over). Op basis van het goedgekeurde concept.
+//
+// Zo werkt het ook in een echt mediabureau: eerst briefing-akkoord, dan productie.
 
 async function callAgent(client, system, user) {
   const response = await client.messages.create({
@@ -32,13 +28,13 @@ async function callAgent(client, system, user) {
     .trim();
 }
 
-const STRATEGIE = "Je bent de Marketing Director van JnA Events. Bepaal voor de gevraagde post: de strategische hoek (waarom werkt dit), de doelgroep (kort, concreet), en de gewenste actie van de kijker. Antwoord in drie korte alinea's met de kopjes 'Hoek:', 'Doelgroep:', 'Gewenste actie:'. Geen markdown, geen sterretjes.";
+const STRATEGIE = "Je bent de Marketing Director van JnA Events. Maak een KORT, helder concept voor de gevraagde post (max 8 zinnen totaal). Lever vier korte blokken: 'Hoek:' (1-2 zinnen waarom dit werkt), 'Doelgroep:' (1 zin), 'Gewenste actie:' (1 zin), 'Hoe het eruit ziet:' (2-3 zinnen die kort beschrijven wat de kijker te zien krijgt - sfeer, beeld, beweging). Schrijf in spreektaal want het wordt mogelijk voorgelezen. Geen markdown, geen sterretjes, geen emoji.";
 
-const COPYWRITER = "Je bent de Content Creator van JnA Events. Schrijf een sterke social media caption in het Nederlands voor het gevraagde kanaal. Begin met een opening hook die scrollers stopt. Hou het kort en levendig. Eindig met een duidelijke call-to-action. Lever drie blokken: 'Hook:' (1 zin), 'Caption:' (max 4 zinnen), 'Hashtags:' (5-8 relevante tags zonder hekjes, gescheiden door spaties). Geen markdown.";
+const COPYWRITER = "Je bent de Content Creator van JnA Events. Schrijf op basis van het meegegeven concept een sterke social media caption in het Nederlands. Lever drie blokken: 'Hook:' (1 zin die scrollers stopt), 'Caption:' (max 4 zinnen, levendig), 'Hashtags:' (5-8 relevante tags zonder hekjes, gescheiden door spaties). Geen markdown.";
 
-const VISUAL = "Je bent de Visual Director van JnA Events. Bedenk voor de gevraagde post DRIE concrete visual-concepten die opvallen op het gekozen kanaal. Voor elk concept lever je: 'Concept N:' (1 zin idee), gevolgd door 'Prompt:' (een gedetailleerde Engelse image-generation prompt, fotografisch, met licht, hoek, sfeer en compositie - geschikt voor gpt-image-1). Geen markdown.";
+const VISUAL = "Je bent de Visual Director van JnA Events. Bedenk op basis van het meegegeven concept DRIE concrete visual-concepten. Voor elk: 'Concept N:' (1 zin idee), 'Prompt:' (gedetailleerde Engelse image-generation prompt, fotografisch, met licht, hoek, sfeer en compositie - geschikt voor gpt-image-1). Geen markdown.";
 
-const REGIE = "Je bent de Video Director van JnA Events. Maak een uitvoerbaar regie-script voor een korte video (15-30 seconden) over het gevraagde onderwerp, geschikt voor het gekozen kanaal. Lever: 'Concept:' (1 zin), 'Shotlist:' (4-6 shots, elk 1 regel: 'Shot 1: ...'), 'Voice-over of tekst-op-beeld:' (de exacte zinnen). Schrijf zo dat een telefooncamera dit kan filmen. Geen markdown.";
+const REGIE = "Je bent de Video Director van JnA Events. Maak op basis van het meegegeven concept een uitvoerbaar regie-script voor een korte video (15-30 sec). Lever: 'Shotlist:' (4-6 shots, elk 1 regel: 'Shot 1: ...'), 'Voice-over of tekst-op-beeld:' (exacte zinnen). Schrijf zo dat een telefooncamera dit kan filmen. Geen markdown.";
 
 export default async function handler(req, res) {
   const auth = req.headers.authorization || "";
@@ -51,41 +47,41 @@ export default async function handler(req, res) {
   if (!apiKey) return res.status(500).json({ error: "ANTHROPIC_API_KEY ontbreekt." });
 
   try {
-    const { channel, topic, catalog } = req.body || {};
-    if (!channel || !topic) return res.status(400).json({ error: "channel en topic zijn verplicht" });
+    const { phase, channel, topic, catalog, concept } = req.body || {};
+    if (!phase || !channel || !topic) return res.status(400).json({ error: "phase, channel en topic zijn verplicht" });
 
     const client = new Anthropic({ apiKey });
 
-    // Context die elke agent meekrijgt
     const catalogTekst = Array.isArray(catalog) && catalog.length
       ? "\n\nApparatuur van JnA Events die in het materiaal mag voorkomen:\n" +
         catalog.map((p) => "- " + p.name + (p.category ? " (" + p.category + ")" : "") + (p.description ? ": " + p.description : "")).join("\n")
       : "";
 
-    const briefing = `Kanaal: ${channel}\nOnderwerp: ${topic}${catalogTekst}`;
+    // FASE 1: alleen Marketing Director
+    if (phase === "concept") {
+      const briefing = `Kanaal: ${channel}\nOnderwerp: ${topic}${catalogTekst}`;
+      const strategie = await callAgent(client, STRATEGIE, briefing);
+      return res.status(200).json({ phase: "concept", strategie });
+    }
 
-    // Vier agents parallel laten denken
-    const [strategie, copy, visual, regie] = await Promise.all([
-      callAgent(client, STRATEGIE, briefing),
-      callAgent(client, COPYWRITER, briefing),
-      callAgent(client, VISUAL, briefing),
-      callAgent(client, REGIE, briefing),
-    ]);
+    // FASE 2: de drie productie-agents, parallel
+    if (phase === "production") {
+      if (!concept) return res.status(400).json({ error: "concept ontbreekt voor productie-fase" });
+      const briefing = `Kanaal: ${channel}\nOnderwerp: ${topic}\n\nGoedgekeurd concept van de Marketing Director:\n${concept}${catalogTekst}`;
 
-    // Visual-prompts uit het visual-blok halen voor latere beeldgeneratie
-    const promptRegels = visual.split("\n").filter((l) => /^prompt\s*:/i.test(l.trim()));
-    const imagePrompts = promptRegels.map((l) => l.replace(/^prompt\s*:\s*/i, "").trim()).filter(Boolean).slice(0, 3);
+      const [copy, visual, regie] = await Promise.all([
+        callAgent(client, COPYWRITER, briefing),
+        callAgent(client, VISUAL, briefing),
+        callAgent(client, REGIE, briefing),
+      ]);
 
-    return res.status(200).json({
-      channel,
-      topic,
-      strategie,
-      copy,
-      visual,
-      regie,
-      imagePrompts,
-      created: new Date().toISOString(),
-    });
+      const promptRegels = visual.split("\n").filter((l) => /^prompt\s*:/i.test(l.trim()));
+      const imagePrompts = promptRegels.map((l) => l.replace(/^prompt\s*:\s*/i, "").trim()).filter(Boolean).slice(0, 3);
+
+      return res.status(200).json({ phase: "production", copy, visual, regie, imagePrompts });
+    }
+
+    return res.status(400).json({ error: "Onbekende phase: " + phase });
   } catch (err) {
     console.error("Multi-agent fout:", err.message);
     return res.status(500).json({ error: "Workflow mislukte: " + (err.message || "onbekend") });

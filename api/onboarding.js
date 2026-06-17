@@ -25,14 +25,15 @@ const CHECKLISTS = {
     ],
   },
   email: {
-    title: "E-mail koppeling",
+    title: "E-mail koppeling (Hostinger / IMAP)",
     intent: "Inkomende e-mails laten lezen en beantwoorden door NOVA.",
     steps: [
-      { id: "em-1", title: "Kies tussen Gmail, Outlook of IMAP", help: "Gmail en Outlook gaan via hun officiele API (veiliger). IMAP werkt voor elke mailprovider (ook info@jna-events.nl), maar vereist een serveradres en wachtwoord." },
-      { id: "em-2", title: "Voor Gmail: OAuth-app aanmaken in Google Cloud", help: "console.cloud.google.com > nieuw project > Gmail API inschakelen > OAuth client ID aanmaken voor agent.jna-events.nl." },
-      { id: "em-3", title: "Voor IMAP: server, poort en app-wachtwoord verzamelen", help: "Bij de meeste providers (jouw hosting bijv.): IMAP-server zoals mail.jna-events.nl, poort 993, gebruikersnaam = mailadres, wachtwoord = een speciaal aangemaakt app-wachtwoord (niet je gewone wachtwoord)." },
-      { id: "em-4", title: "Sleutels veilig toevoegen in Vercel", help: "GMAIL_TOKEN of OUTLOOK_TOKEN of IMAP_HOST/IMAP_USER/IMAP_PASS - nooit in de code, alleen in Vercel Environment Variables." },
-      { id: "em-5", title: "Eerste mailcheck doen", help: "NOVA haalt dan bij elke login de nieuwste mails op en noemt ze in de begroeting." },
+      { id: "em-1", title: "Open hPanel van Hostinger", help: "Ga naar hpanel.hostinger.com en log in. Klik bij jna-events.nl op 'Beheer' en daarna in het menu links op 'E-mail accounts'." },
+      { id: "em-2", title: "Open instellingen van info@jna-events.nl", help: "Klik in de lijst op 'info@jna-events.nl' en daarna op 'Configuratie-instellingen' of 'IMAP/POP3 instellingen'. Noteer de IMAP-server, dat is meestal imap.hostinger.com." },
+      { id: "em-3", title: "Maak in Hostinger een NIEUW app-wachtwoord aan", help: "Belangrijk: gebruik NIET je gewone wachtwoord. Klik bij het account op 'Wachtwoord wijzigen' OF gebruik een aparte 'App-wachtwoord' optie als die er staat. Maak een lang willekeurig wachtwoord aan dat je alleen voor NOVA gebruikt. Bewaar het ergens veilig - je hebt het zo nodig." },
+      { id: "em-4", title: "Voeg de drie sleutels toe in Vercel", help: "In Vercel > Settings > Environment Variables, scope Production: IMAP_HOST met waarde imap.hostinger.com, IMAP_USER met waarde info@jna-events.nl, IMAP_PASS met het app-wachtwoord dat je net hebt gemaakt. NIEMAND anders hoeft dat wachtwoord ooit te zien, ook ik niet." },
+      { id: "em-5", title: "Deploy opnieuw zonder build-cache", help: "Vercel > Deployments > drie puntjes bij de bovenste > Redeploy. Haal het vinkje bij 'Use existing Build Cache' weg. Wacht tot het groene vinkje verschijnt." },
+      { id: "em-6", title: "Test door uit te loggen en opnieuw in te loggen", help: "NOVA haalt bij login automatisch je nieuwste mails op en noemt ze in haar begroeting. Werkt het niet? Check in Vercel onder Logs of er een IMAP-foutmelding staat." },
     ],
   },
   tiktok: {
