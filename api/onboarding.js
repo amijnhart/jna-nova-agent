@@ -1,83 +1,181 @@
 import { verifyToken } from "./_auth.js";
-import { readData, writeData, KEYS, CONFIG } from "./_config.js";
+import { readData, writeData, KEYS, CONFIG, listAllKeys } from "./_config.js";
 
-// Onboarding-checklist voor nieuwe koppelingen.
+// Onboarding & status & backup in één functie.
 //
-// De checklist zelf staat hier vast: dit is de bron van waarheid voor welke
-// stappen er nodig zijn per integratie. De voortgang (welke stappen al gedaan
-// zijn) wordt blijvend bewaard via _config.js.
+// Routes:
+//   ?action=status   - GET: complete wizard (stappen + live status van integraties)
+//                      POST: stap afvinken/uitvinken
+//   ?action=backup   - GET: download alle KV-data als JSON
+//                      POST: upload JSON om data terug te zetten
 //
-// Toegevoegde waarde voor de eigenaar: zo zie je bij elke koppeling exact wat
-// er nodig is, in welke volgorde, en wat er nog ontbreekt - in plaats van het
-// in losse berichten te moeten uitzoeken.
+// De wizard is opgezet als ÉÉN doorlopende setup-flow, niet meer als losse
+// blokken per integratie. Stappen lopen logisch achter elkaar van basisinstellingen
+// naar koppelingen. Per integratie geeft NOVA aan of hij actief is dankzij live
+// detectie - geen handmatig afvinken nodig voor "is mail gekoppeld".
 
-const CHECKLISTS = {
-  whatsapp: {
+// Eén lineaire wizard: van basis (verplicht) naar koppelingen (optioneel).
+// Elke stap weet zelf of hij 'auto-detecteerd' wordt (gebruiker hoeft niets
+// af te vinken) of 'handmatig' (gebruiker moet bevestigen).
+const WIZARD = [
+  {
+    id: "basis",
+    title: "Basisinstellingen",
+    intent: "Eerst zorgen dat NOVA überhaupt draait.",
+    steps: [
+      { id: "basis-1", title: "Wachtwoord ingesteld (NOVA_PASSWORD)", auto: () => true, // als je leest kun je inloggen
+        help: "Het wachtwoord waarmee je in NOVA komt staat veilig in Vercel." },
+      { id: "basis-2", title: "AI-brein actief (ANTHROPIC_API_KEY)", auto: () => !!CONFIG.anthropicKey(),
+        help: "NOVA gebruikt deze sleutel om met Claude te praten. Zonder kan ze niet antwoorden." },
+    ],
+  },
+  {
+    id: "email",
+    title: "E-mail koppeling",
+    intent: "NOVA leest je inbox en signaleert urgente mails.",
+    steps: [
+      { id: "email-1", title: "Mailbox-gegevens ingevoerd in NOVA",
+        autoAsync: async () => {
+          const s = await readData(KEYS.imapSettings, null);
+          return !!(s && s.host && s.user && s.pass);
+        },
+        help: "Klik op het 📧-icoon rond de cirkel. NOVA herkent automatisch je provider en vraagt alleen om mailadres en app-wachtwoord." },
+      { id: "email-2", title: "App-wachtwoord gebruikt (niet je gewone wachtwoord)", manual: true,
+        help: "Voor Hostinger: maak een nieuw wachtwoord aan via hPanel. Voor Gmail: maak een app-wachtwoord aan op myaccount.google.com onder Beveiliging." },
+      { id: "email-3", title: "Test: NOVA leest mailbox bij inloggen", manual: true,
+        help: "Log uit en weer in. NOVA noemt je laatste mails in de begroeting als de koppeling werkt." },
+    ],
+  },
+  {
+    id: "whatsapp",
     title: "WhatsApp Business",
-    intent: "Berichten ontvangen en automatisch beantwoorden via WhatsApp.",
+    intent: "Berichten ontvangen en versturen via WhatsApp.",
     steps: [
-      { id: "wa-1", title: "WhatsApp Business account aanmaken", help: "Ga naar business.whatsapp.com en maak een zakelijk account aan met een nummer dat NOG NIET in de gewone WhatsApp gebruikt wordt." },
-      { id: "wa-2", title: "Provider kiezen: Twilio of 360dialog", help: "Twilio is bekender en heeft een Nederlandse interface. 360dialog is goedkoper voor hoge volumes. Voor JnA Events is Twilio het meest praktisch." },
-      { id: "wa-3", title: "Account aanmaken bij de gekozen provider", help: "Bij Twilio: ga naar twilio.com, maak een account, en activeer WhatsApp Sender (Console > Messaging > WhatsApp)." },
-      { id: "wa-4", title: "Sender goedkeuring afwachten", help: "Meta keurt elke afzender handmatig goed. Duurt meestal 1-3 dagen. Tot dan kun je alleen testen." },
-      { id: "wa-5", title: "API-sleutel toevoegen in Vercel", help: "Eenmaal goedgekeurd: zet WHATSAPP_TOKEN in Vercel (Settings > Environment Variables) met de access token van Twilio of 360dialog." },
-      { id: "wa-6", title: "Test bericht versturen", help: "Vraag NOVA om een testbericht te sturen naar jouw eigen WhatsApp. Werkt dat, dan is de koppeling actief." },
+      { id: "wa-1", title: "WhatsApp Business account aangemaakt", manual: true,
+        help: "Ga naar business.whatsapp.com en maak een zakelijk account aan met een nummer dat NOG NIET in de gewone WhatsApp gebruikt wordt." },
+      { id: "wa-2", title: "Provider gekozen en account aangemaakt", manual: true,
+        help: "Twilio (eenvoudiger) of 360dialog (goedkoper). Maak een account, activeer WhatsApp Sender." },
+      { id: "wa-3", title: "Sender goedgekeurd door Meta", manual: true,
+        help: "Meta keurt elke afzender handmatig goed. Duurt meestal 1-3 dagen." },
+      { id: "wa-4", title: "WhatsApp actief in NOVA",
+        auto: () => CONFIG.hasWhatsApp(),
+        help: "Zet de sleutels in Vercel: TWILIO_SID + TWILIO_TOKEN + TWILIO_FROM, of WHATSAPP_TOKEN + WHATSAPP_PHONE_ID. Daarna deploy zonder build-cache." },
     ],
   },
-  email: {
-    title: "E-mail koppeling (Hostinger / IMAP)",
-    intent: "Inkomende e-mails laten lezen en beantwoorden door NOVA.",
+  {
+    id: "social",
+    title: "Social Media (TikTok, Instagram, Facebook)",
+    intent: "Content automatisch laten plaatsen op je social-kanalen.",
     steps: [
-      { id: "em-1", title: "Open hPanel van Hostinger", help: "Ga naar hpanel.hostinger.com en log in. Klik bij jna-events.nl op 'Beheer' en daarna in het menu links op 'E-mail accounts'." },
-      { id: "em-2", title: "Open instellingen van info@jna-events.nl", help: "Klik in de lijst op 'info@jna-events.nl' en daarna op 'Configuratie-instellingen' of 'IMAP/POP3 instellingen'. Noteer de IMAP-server, dat is meestal imap.hostinger.com." },
-      { id: "em-3", title: "Maak in Hostinger een NIEUW app-wachtwoord aan", help: "Belangrijk: gebruik NIET je gewone wachtwoord. Klik bij het account op 'Wachtwoord wijzigen' OF gebruik een aparte 'App-wachtwoord' optie als die er staat. Maak een lang willekeurig wachtwoord aan dat je alleen voor NOVA gebruikt. Bewaar het ergens veilig - je hebt het zo nodig." },
-      { id: "em-4", title: "Voeg de drie sleutels toe in Vercel", help: "In Vercel > Settings > Environment Variables, scope Production: IMAP_HOST met waarde imap.hostinger.com, IMAP_USER met waarde info@jna-events.nl, IMAP_PASS met het app-wachtwoord dat je net hebt gemaakt. NIEMAND anders hoeft dat wachtwoord ooit te zien, ook ik niet." },
-      { id: "em-5", title: "Deploy opnieuw zonder build-cache", help: "Vercel > Deployments > drie puntjes bij de bovenste > Redeploy. Haal het vinkje bij 'Use existing Build Cache' weg. Wacht tot het groene vinkje verschijnt." },
-      { id: "em-6", title: "Test door uit te loggen en opnieuw in te loggen", help: "NOVA haalt bij login automatisch je nieuwste mails op en noemt ze in haar begroeting. Werkt het niet? Check in Vercel onder Logs of er een IMAP-foutmelding staat." },
+      { id: "soc-1", title: "TikTok Business actief", auto: () => CONFIG.hasTikTok(),
+        help: "Persoonlijk TikTok-account omzetten naar Business. Daarna in TikTok for Business Developer Portal een app aanmaken voor agent.jna-events.nl en TIKTOK_TOKEN in Vercel zetten." },
+      { id: "soc-2", title: "Instagram & Facebook actief", auto: () => CONFIG.hasMeta(),
+        help: "Facebook-pagina aanmaken, Instagram-zakelijk koppelen, Meta Developer App aanvragen met permissies instagram_content_publish + pages_show_list, daarna META_ACCESS_TOKEN in Vercel zetten." },
     ],
   },
-  tiktok: {
-    title: "TikTok Business",
-    intent: "Content automatisch laten plaatsen op TikTok via NOVA.",
+  {
+    id: "ai-beeld",
+    title: "AI-beeldgeneratie",
+    intent: "NOVA genereert beelden voor je content via OpenAI.",
     steps: [
-      { id: "tt-1", title: "Persoonlijk account omzetten naar Business", help: "In de TikTok-app: profiel > instellingen > account > overschakelen naar zakelijk account. Gratis." },
-      { id: "tt-2", title: "Wachten op verificatie", help: "TikTok bekijkt het account handmatig. Duurt 1-3 werkdagen. Bij JnA loopt deze stap al." },
-      { id: "tt-3", title: "TikTok for Business Developer-account aanmaken", help: "business.tiktok.com > developer portal > app aanmaken voor agent.jna-events.nl." },
-      { id: "tt-4", title: "Access token toevoegen in Vercel", help: "Zet TIKTOK_TOKEN in Vercel zodra de developer-app goedgekeurd is." },
+      { id: "img-1", title: "OpenAI sleutel actief", auto: () => CONFIG.hasImageGen(),
+        help: "Maak een account op platform.openai.com, zet OPENAI_API_KEY in Vercel. ~10 cent per beeld." },
     ],
   },
-  meta: {
-    title: "Instagram & Facebook",
-    intent: "Posts plaatsen op Instagram en Facebook via Meta Graph API.",
-    steps: [
-      { id: "me-1", title: "Facebook-pagina hebben voor JnA Events", help: "Verplicht: Instagram-zakelijk werkt alleen gekoppeld aan een Facebook-pagina." },
-      { id: "me-2", title: "Meta Developer App aanmaken", help: "developers.facebook.com > maak een nieuwe app > type Business." },
-      { id: "me-3", title: "Instagram Business Account koppelen aan de Facebook-pagina", help: "In Meta Business Suite onder Account Center." },
-      { id: "me-4", title: "Permissies aanvragen: instagram_content_publish + pages_show_list", help: "Meta keurt dit handmatig goed (paar dagen)." },
-      { id: "me-5", title: "Long-lived access token genereren", help: "Via Graph API Explorer. Geldig 60 dagen, daarna vernieuwen." },
-      { id: "me-6", title: "Token toevoegen in Vercel", help: "Zet META_ACCESS_TOKEN in Vercel Environment Variables." },
-    ],
-  },
-};
+];
 
-function buildItems(progress) {
-  return Object.entries(CHECKLISTS).map(([key, list]) => {
-    const connected =
-      key === "whatsapp" ? CONFIG.hasWhatsApp() :
-      key === "email" ? CONFIG.hasMailConnection() :
-      key === "tiktok" ? CONFIG.hasTikTok() :
-      key === "meta" ? CONFIG.hasMeta() : false;
-    const done = list.steps.filter((s) => progress.includes(s.id)).length;
-    return {
-      key,
-      title: list.title,
-      intent: list.intent,
-      connected,
-      total: list.steps.length,
-      done,
-      steps: list.steps.map((s) => ({ ...s, done: progress.includes(s.id) })),
-    };
-  });
+// Voor elke stap: bepaal of hij voltooid is.
+async function resolveSteps(progress) {
+  const result = [];
+  for (const block of WIZARD) {
+    const steps = [];
+    for (const s of block.steps) {
+      let done = false;
+      if (s.auto) done = !!s.auto();
+      else if (s.autoAsync) done = !!(await s.autoAsync());
+      else if (s.manual) done = progress.includes(s.id);
+      steps.push({ id: s.id, title: s.title, help: s.help, done, auto: !!(s.auto || s.autoAsync) });
+    }
+    const doneCount = steps.filter((x) => x.done).length;
+    result.push({
+      key: block.id,
+      title: block.title,
+      intent: block.intent,
+      steps,
+      done: doneCount,
+      total: steps.length,
+      complete: doneCount === steps.length,
+    });
+  }
+  return result;
+}
+
+// Snelle live-status van integraties (zonder volledige wizard te bouwen).
+async function liveIntegrationStatus() {
+  const imapStored = await readData(KEYS.imapSettings, null);
+  return {
+    ai: !!CONFIG.anthropicKey(),
+    email: CONFIG.hasMailConnection() || !!(imapStored && imapStored.host && imapStored.pass),
+    whatsapp: CONFIG.hasWhatsApp(),
+    tiktok: CONFIG.hasTikTok(),
+    meta: CONFIG.hasMeta(),
+    imageGen: CONFIG.hasImageGen(),
+  };
+}
+
+// --- BACKUP / RESTORE ---
+
+async function handleBackup(req, res) {
+  if (req.method === "GET") {
+    // Exporteer alle KV-data als JSON
+    const keys = await listAllKeys();
+    const data = {};
+    for (const k of keys) {
+      data[k] = await readData(k, null);
+    }
+    return res.status(200).json({
+      exported: new Date().toISOString(),
+      keys: keys.length,
+      data,
+    });
+  }
+  if (req.method === "POST") {
+    // Zet backup terug
+    const { data } = req.body || {};
+    if (!data || typeof data !== "object") return res.status(400).json({ error: "Geen geldige backup-data." });
+    let restored = 0;
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== null && value !== undefined) {
+        await writeData(key, value);
+        restored++;
+      }
+    }
+    return res.status(200).json({ restored, restoredAt: new Date().toISOString() });
+  }
+  return res.status(405).json({ error: "Methode niet toegestaan" });
+}
+
+// --- STATUS / WIZARD ---
+
+async function handleStatus(req, res) {
+  if (req.method === "GET") {
+    const progress = await readData(KEYS.onboarding, []);
+    const items = await resolveSteps(progress);
+    const integrations = await liveIntegrationStatus();
+    return res.status(200).json({ items, integrations });
+  }
+  if (req.method === "POST") {
+    const { stepId, done } = req.body || {};
+    if (typeof stepId !== "string") return res.status(400).json({ error: "stepId ontbreekt" });
+    let progress = await readData(KEYS.onboarding, []);
+    if (done) { if (!progress.includes(stepId)) progress = [...progress, stepId]; }
+    else { progress = progress.filter((s) => s !== stepId); }
+    await writeData(KEYS.onboarding, progress);
+    const items = await resolveSteps(progress);
+    const integrations = await liveIntegrationStatus();
+    return res.status(200).json({ items, integrations });
+  }
+  return res.status(405).json({ error: "Methode niet toegestaan" });
 }
 
 export default async function handler(req, res) {
@@ -86,22 +184,12 @@ export default async function handler(req, res) {
   if (!verifyToken(token)) return res.status(401).json({ error: "Niet ingelogd." });
 
   try {
-    if (req.method === "GET") {
-      const progress = await readData(KEYS.onboarding, []);
-      return res.status(200).json({ items: buildItems(progress) });
-    }
-    if (req.method === "POST") {
-      const { stepId, done } = req.body || {};
-      if (typeof stepId !== "string") return res.status(400).json({ error: "stepId ontbreekt" });
-      let progress = await readData(KEYS.onboarding, []);
-      if (done) { if (!progress.includes(stepId)) progress = [...progress, stepId]; }
-      else { progress = progress.filter((s) => s !== stepId); }
-      await writeData(KEYS.onboarding, progress);
-      return res.status(200).json({ items: buildItems(progress) });
-    }
-    return res.status(405).json({ error: "Methode niet toegestaan" });
+    const action = req.query.action || "status";
+    if (action === "status") return await handleStatus(req, res);
+    if (action === "backup") return await handleBackup(req, res);
+    return res.status(400).json({ error: "Onbekende action. Gebruik ?action=status of ?action=backup." });
   } catch (err) {
     console.error("Onboarding fout:", err.message);
-    return res.status(500).json({ error: "Kon onboarding niet verwerken" });
+    return res.status(500).json({ error: "Onboarding-fout: " + err.message });
   }
 }

@@ -95,4 +95,21 @@ export const KEYS = {
   catalog: "nova_catalog",
   calendar: "nova_calendar",
   onboarding: "nova_onboarding",
+  imapSettings: "nova_imap_settings",
+  whatsappInbox: "nova_whatsapp_inbox",
 };
+
+// Lijst alle KV-keys op die bij deze app horen. Wordt gebruikt door de
+// backup-functie om alle data in één keer te exporteren.
+export async function listAllKeys() {
+  if (!hasKV()) {
+    return Array.from(memoryStore.keys());
+  }
+  try {
+    // Vercel KV ondersteunt SCAN/KEYS via REST. We gebruiken hier alle bekende
+    // keys uit KEYS plus eventuele andere via KEYS-lijst.
+    return Object.values(KEYS);
+  } catch {
+    return Object.values(KEYS);
+  }
+}

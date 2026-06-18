@@ -10,7 +10,8 @@ const IMPROVE_URL = "/api/data?type=improvements";
 const INBOX_URL = "/api/mail?action=inbox";
 const CATALOG_URL = "/api/data?type=catalog";
 const CALENDAR_URL = "/api/data?type=calendar";
-const ONBOARDING_URL = "/api/onboarding";
+const ONBOARDING_URL = "/api/onboarding?action=status";
+const BACKUP_URL = "/api/onboarding?action=backup";
 const WHATSAPP_URL = "/api/whatsapp?action=send";
 const POST_WORKFLOW_URL = "/api/post-workflow";
 const IMAGE_URL = "/api/image-generate";
@@ -45,6 +46,7 @@ function parseReply(raw) {
   let plan = null;
   let whatsapp = null;
   let post = null;
+  let voice = null;
   const kept = [];
   for (const line of lines) {
     const a = line.match(/^\s*ACTIES\s*:\s*(.+)$/i);
@@ -53,6 +55,7 @@ function parseReply(raw) {
     const p = line.match(/^\s*PLAN\s*:\s*(.+)$/i);
     const w = line.match(/^\s*STUUR_WA\s*:\s*(.+)$/i);
     const ps = line.match(/^\s*POST\s*:\s*(.+)$/i);
+    const st = line.match(/^\s*STEM\s*:\s*(.+)$/i);
     if (a) {
       actions = a[1].split("|").map((s) => s.trim()).filter(Boolean).slice(0, 4);
     } else if (t) {
@@ -69,11 +72,21 @@ function parseReply(raw) {
     } else if (ps) {
       const parts = ps[1].split("|").map((s) => s.trim());
       if (parts.length >= 2) post = { channel: parts[0], topic: parts[1] };
+    } else if (st) {
+      const cmd = st[1].trim().toLowerCase();
+      if (/^rate\s*=/.test(cmd)) {
+        const num = parseFloat(cmd.split("=")[1]);
+        if (isFinite(num) && num >= 0.5 && num <= 2.0) voice = { rate: num };
+      } else if (cmd === "uit" || cmd === "off") {
+        voice = { on: false };
+      } else if (cmd === "aan" || cmd === "on") {
+        voice = { on: true };
+      }
     } else {
       kept.push(line);
     }
   }
-  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post };
+  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post, voice };
 }
 
 function orbitPos() {
@@ -333,6 +346,7 @@ function Nova({ token, onLogout }) {
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [voicePulse, setVoicePulse] = useState(0); // 0..1, golft tijdens spreken
   const [voiceOn, setVoiceOn] = useState(true);
   const [voiceRate, setVoiceRate] = useState(() => {
     try { const v = parseFloat(localStorage.getItem("nova_voice_rate")); return isFinite(v) && v >= 0.5 && v <= 2.0 ? v : 1.05; }
@@ -341,6 +355,8 @@ function Nova({ token, onLogout }) {
   const [showVoicePanel, setShowVoicePanel] = useState(false);
   const [imapCfg, setImapCfg] = useState(null); // {configured, host, port, user, passSet}
   const [showImap, setShowImap] = useState(false);
+  const [integrations, setIntegrations] = useState(null); // {mail:{active}, whatsapp:{active}, images:{active}, storage:{active}}
+  const [emails, setEmails] = useState([]); // recente mails uit IMAP-inbox, meegestuurd naar chat als context
   const [status, setStatus] = useState("Online · klaar voor je opdracht");
   const [micSupported, setMicSupported] = useState(true);
   const [actions, setActions] = useState([]);
@@ -372,9 +388,47 @@ function Nova({ token, onLogout }) {
   const recognitionRef = useRef(null);
   const voicesRef = useRef([]);
   const tasksRef = useRef([]);
+  const integrationsRef = useRef({});
+  const emailsRef = useRef([]);
 
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
   useEffect(() => { catalogRef.current = catalog; }, [catalog]);
+  useEffect(() => { integrationsRef.current = integrations; }, [integrations]);
+  useEffect(() => { emailsRef.current = emails; }, [emails]);
+
+  // Periodieke statuscheck (elke 30 sec). NOVA detecteert zelf wanneer een
+  // integratie nieuw actief wordt en kondigt dat aan.
+  useEffect(() => {
+    if (!token) return;
+    const checkStatus = async () => {
+      try {
+        const r = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
+        const d = await r.json();
+        if (!d.integrations) return;
+        const prev = integrationsRef.current || {};
+        const next = d.integrations;
+        // Detecteer overgangen van inactief naar actief
+        const newlyActive = [];
+        for (const key of ["mail", "whatsapp", "images", "storage"]) {
+          if (next[key]?.active && !prev[key]?.active) {
+            newlyActive.push(key);
+          }
+        }
+        setIntegrations(next);
+        if (newlyActive.length > 0) {
+          const labels = { mail: "e-mailkoppeling", whatsapp: "WhatsApp", images: "beeldgeneratie", storage: "opslag" };
+          const msg = newlyActive.length === 1
+            ? `Je ${labels[newlyActive[0]]} is nu actief. Ik kan er meteen gebruik van maken.`
+            : `Meerdere integraties zijn actief geworden: ${newlyActive.map((k) => labels[k]).join(", ")}.`;
+          setMessages((m) => [...m, { role: "assistant", content: msg }]);
+          if (voiceOn) speak(msg);
+        }
+      } catch (e) { void e; }
+    };
+    const iv = setInterval(checkStatus, 30000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, busy]);
 
   // Bij het inloggen: NOVA spreekt een korte begroeting uit, zet openstaande acties
@@ -386,6 +440,7 @@ function Nova({ token, onLogout }) {
 
       let imps = [];
       let inbox = { connected: false, emails: [] };
+      let liveIntegrations = {};
       try {
         const r1 = await fetch(IMPROVE_URL, { headers: { Authorization: "Bearer " + token } });
         const d1 = await r1.json();
@@ -394,6 +449,7 @@ function Nova({ token, onLogout }) {
       try {
         const r2 = await fetch(INBOX_URL, { headers: { Authorization: "Bearer " + token } });
         inbox = await r2.json();
+        if (inbox.connected && Array.isArray(inbox.emails)) setEmails(inbox.emails);
       } catch (e) { void e; }
       try {
         const r3 = await fetch(CATALOG_URL, { headers: { Authorization: "Bearer " + token } });
@@ -409,11 +465,17 @@ function Nova({ token, onLogout }) {
         const r5 = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
         const d5 = await r5.json();
         if (Array.isArray(d5.items)) setOnboarding(d5.items);
+        if (d5.integrations) { setIntegrations(d5.integrations); liveIntegrations = d5.integrations; }
       } catch (e) { void e; }
       try {
         const r6 = await fetch("/api/mail?action=settings", { headers: { Authorization: "Bearer " + token } });
         const d6 = await r6.json();
         setImapCfg(d6);
+      } catch (e) { void e; }
+      try {
+        const r7 = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
+        const d7 = await r7.json();
+        if (d7.integrations) setIntegrations(d7.integrations);
       } catch (e) { void e; }
       let waInbox = [];
       try {
@@ -442,8 +504,20 @@ function Nova({ token, onLogout }) {
       } else {
         tekst += "Er zijn geen openstaande zaken die je aandacht vragen. Waar wil je mee beginnen?";
       }
-      if (!inbox.connected) {
-        tekst += " Je mail en agenda zijn nog niet gekoppeld, dus die kan ik nog niet meenemen.";
+
+      // Status van koppelingen erbij (alleen als de wizard die heeft teruggegeven)
+      // zodat NOVA zelf detecteert welke integraties actief zijn (verbeterpunt 10-16).
+      const integ = liveIntegrations || {};
+      const actief = [];
+      const inactief = [];
+      if (integ.email !== undefined) (integ.email ? actief : inactief).push("e-mail");
+      if (integ.whatsapp !== undefined) (integ.whatsapp ? actief : inactief).push("WhatsApp");
+      if (integ.imageGen !== undefined && integ.imageGen) actief.push("AI-beelden");
+      if (integ.tiktok !== undefined && integ.tiktok) actief.push("TikTok");
+      if (integ.meta !== undefined && integ.meta) actief.push("Instagram en Facebook");
+      if (actief.length) tekst += " Actieve koppelingen: " + actief.join(", ") + ".";
+      if (!inbox.connected && !actief.includes("e-mail")) {
+        tekst += " Je mail is nog niet gekoppeld - klik op het mail-icoon rond de cirkel om dat in te stellen.";
       }
 
       // Toon de begroeting als bericht in de chat en spreek hem uit.
@@ -554,7 +628,37 @@ function Nova({ token, onLogout }) {
       });
       const d = await res.json();
       if (Array.isArray(d.items)) setOnboarding(d.items);
+      if (d.integrations) setIntegrations(d.integrations);
     } catch (e) { void e; }
+  }
+
+  // Download alle data als backup-JSON
+  async function downloadBackup() {
+    try {
+      const res = await fetch(BACKUP_URL, { headers: { Authorization: "Bearer " + token } });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "backup mislukte");
+      const blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `nova-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Backup mislukt: " + err.message);
+    }
+  }
+
+  // Haal status opnieuw op (gebruikt door NOVA-commando 'controleer integraties')
+  async function refreshStatus() {
+    try {
+      const res = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setOnboarding(d.items);
+      if (d.integrations) setIntegrations(d.integrations);
+      return d.integrations || {};
+    } catch (e) { return {}; }
   }
 
   async function saveImapSettings(host, port, user, pass) {
@@ -904,10 +1008,19 @@ function Nova({ token, onLogout }) {
   }, []);
 
   async function callBackend(msgs, mode) {
+    // Stuur compacte versie van mails mee zodat NOVA bij doorvragen weet wat er staat
+    const mailContext = (emailsRef.current || []).slice(0, 20).map((m) => ({
+      from: m.fromName || m.from,
+      subject: m.subject,
+      snippet: m.snippet,
+      unread: !!m.unread,
+      urgent: !!m.urgent,
+      received: m.received,
+    }));
     const res = await fetch(CHAT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify({ messages: msgs, mode, catalog: catalogRef.current }),
+      body: JSON.stringify({ messages: msgs, mode, catalog: catalogRef.current, integrations, voiceRate, emails: mailContext }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) { onLogout(); throw new Error("Sessie verlopen, log opnieuw in."); }
@@ -936,10 +1049,16 @@ function Nova({ token, onLogout }) {
     setMessages(next); setInput(""); setBusy(true); setActions([]); setStatus("NOVA denkt na...");
     try {
       const raw = await callBackend(next.map((m) => ({ role: m.role, content: m.content })));
-      const { reply, actions: acts, task, improve, plan, whatsapp, post } = parseReply(raw);
+      const { reply, actions: acts, task, improve, plan, whatsapp, post, voice } = parseReply(raw);
       const finalReply = reply || "Sorry, ik kon even niet reageren.";
       setMessages((p) => [...p, { role: "assistant", content: finalReply }]);
       setStatus("Online · klaar voor je opdracht");
+      // Voice-commando eerst toepassen, dan spreken met het nieuwe tempo/staat
+      if (voice) {
+        if (voice.rate) updateVoiceRate(voice.rate);
+        if (voice.on === true && !voiceOn) setVoiceOn(true);
+        if (voice.on === false && voiceOn) { stopSpeaking(); setVoiceOn(false); }
+      }
       speak(finalReply);
       if (task) startTask(task);
       if (improve) addImprovement(improve);
@@ -1027,7 +1146,40 @@ function Nova({ token, onLogout }) {
 
   const orbState = speaking ? "speaking" : busy ? "thinking" : listening ? "listening" : "idle";
   const stateLabel = { speaking: "NOVA spreekt...", thinking: "NOVA denkt na...", listening: "NOVA luistert...", idle: "NOVA staat klaar" }[orbState];
-  const coreShadow = orbState === "speaking" ? "0 0 50px rgba(56,230,255,.7), inset 0 0 30px rgba(56,230,255,.4)" : orbState === "thinking" ? "0 0 40px rgba(127,119,221,.6), inset 0 0 24px rgba(127,119,221,.4)" : "0 0 30px rgba(56,230,255,.35), inset 0 0 20px rgba(56,230,255,.25)";
+
+  // Visuele volumemeter: tijdens spraak laat de glow ritmisch pulseren met
+  // realistisch klinkende amplitude. We hebben geen toegang tot het echte volume
+  // van speechSynthesis, dus we simuleren een natuurlijk spraakritme.
+  const [volumeLevel, setVolumeLevel] = useState(0);
+  useEffect(() => {
+    if (!speaking) { setVolumeLevel(0); return; }
+    let raf;
+    let lastUpdate = 0;
+    // Puls-tempo loopt mee met spraaktempo: snellere stem = sneller pulserende glow
+    const pulseInterval = Math.max(50, 100 / voiceRate);
+    const tick = (t) => {
+      if (t - lastUpdate > pulseInterval) {
+        // Gewogen willekeurige amplitude die op spraakritme lijkt:
+        // pieken in het middenbereik, met zo nu en dan een stille moment
+        const base = 0.35 + Math.random() * 0.55;
+        const drop = Math.random() < 0.15 ? 0.4 : 1.0; // soms een ademmoment
+        setVolumeLevel(base * drop);
+        lastUpdate = t;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [speaking, voiceRate]);
+
+  // Glow-intensiteit van de cirkel reageert op volumemeter tijdens spraak
+  const speakingGlow = 35 + Math.round(volumeLevel * 35); // 35-70px
+  const speakingInner = 20 + Math.round(volumeLevel * 18); // 20-38px
+  const speakingOpacity = 0.45 + volumeLevel * 0.35; // 0.45-0.80
+  const coreShadow = orbState === "speaking"
+    ? `0 0 ${speakingGlow}px rgba(56,230,255,${speakingOpacity}), inset 0 0 ${speakingInner}px rgba(56,230,255,.4)`
+    : orbState === "thinking" ? "0 0 40px rgba(127,119,221,.6), inset 0 0 24px rgba(127,119,221,.4)"
+    : "0 0 30px rgba(56,230,255,.35), inset 0 0 20px rgba(56,230,255,.25)";
   const activeTask = tasks.find((t) => t.id === openTask);
 
   return (
@@ -1204,7 +1356,7 @@ function Nova({ token, onLogout }) {
             <div className="ring" style={{ inset: 0, animation: "spinR 24s linear infinite", borderTopColor: CYAN, borderRightColor: "rgba(56,230,255,.1)", borderBottomColor: "transparent", borderLeftColor: "transparent" }} />
             <div className="ring" style={{ inset: 20, animation: "spinL 30s linear infinite", borderTopColor: "transparent", borderRightColor: "transparent", borderBottomColor: PURPLE, borderLeftColor: "rgba(127,119,221,.1)" }} />
             <div className="ring" style={{ inset: 44, animation: "spinR 18s linear infinite", borderColor: "rgba(56,230,255,.12)", borderTopColor: "rgba(56,230,255,.4)" }} />
-            <div style={{ position: "absolute", inset: 90, borderRadius: "50%", background: "radial-gradient(circle at 40% 35%, rgba(56,230,255,.35), rgba(127,119,221,.25) 60%, rgba(4,18,43,.9) 100%)", border: "1px solid rgba(56,230,255,.4)", boxShadow: coreShadow, display: "flex", alignItems: "center", justifyContent: "center", transition: "box-shadow .4s", animation: orbState === "idle" ? "pulse 4s ease-in-out infinite" : "none" }}>
+            <div style={{ position: "absolute", inset: 90, borderRadius: "50%", background: "radial-gradient(circle at 40% 35%, rgba(56,230,255,.35), rgba(127,119,221,.25) 60%, rgba(4,18,43,.9) 100%)", border: "1px solid rgba(56,230,255,.4)", boxShadow: coreShadow, display: "flex", alignItems: "center", justifyContent: "center", transition: orbState === "speaking" ? "box-shadow .1s ease-out" : "box-shadow .4s", animation: orbState === "idle" ? "pulse 4s ease-in-out infinite" : "none" }}>
               <div style={{ fontSize: 18, fontWeight: 800, textAlign: "center", lineHeight: 1.1, letterSpacing: 1, color: "#fff", textShadow: `0 0 18px ${CYAN}` }}>
                 JnA<div style={{ fontSize: 10, letterSpacing: 3, color: CYAN, marginTop: 2 }}>EVENTS</div>
               </div>
@@ -1417,23 +1569,54 @@ function Nova({ token, onLogout }) {
             <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px" }}>
               {!openOnboard && (
                 <>
-                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginBottom: 12, lineHeight: 1.5, padding: "10px 12px", background: "rgba(56,230,255,.05)", borderRadius: 8, border: "1px solid rgba(56,230,255,.15)" }}>
-                    <strong style={{ color: CYAN }}>Veilig:</strong> wachtwoorden en sleutels voer je NIET hier in. Die staan alleen in Vercel → Environment Variables. NOVA leest hier uit of een koppeling klaar is, niet de waarde zelf.
-                  </div>
-                  {onboarding.map((c) => (
-                    <div key={c.key} onClick={() => setOpenOnboard(c)} role="button" tabIndex={0} style={{ display: "flex", gap: 12, padding: "14px 14px", marginBottom: 8, background: c.connected ? "rgba(29,158,117,.06)" : "rgba(255,255,255,.025)", border: `1px solid ${c.connected ? "rgba(29,158,117,.25)" : "rgba(180,210,255,.12)"}`, borderRadius: 10, cursor: "pointer", alignItems: "center" }}>
-                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: c.connected ? "#1D9E75" : "rgba(255,255,255,.08)", color: c.connected ? "#fff" : "rgba(180,210,255,.5)", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: c.connected ? "none" : "1px solid rgba(180,210,255,.2)" }}>{c.connected ? "✓" : c.done}</div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 14, color: "#fff", fontWeight: 500 }}>{c.title}</div>
-                        <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 2, lineHeight: 1.5 }}>{c.intent}</div>
-                        <div style={{ marginTop: 8, height: 3, borderRadius: 2, background: "rgba(255,255,255,.1)" }}>
-                          <div style={{ height: "100%", width: `${Math.round((c.done / c.total) * 100)}%`, background: c.connected ? "#1D9E75" : CYAN, borderRadius: 2 }} />
+                  {/* Totale voortgang */}
+                  {(() => {
+                    const totalDone = onboarding.reduce((n, c) => n + c.done, 0);
+                    const totalSteps = onboarding.reduce((n, c) => n + c.total, 0);
+                    const pct = totalSteps > 0 ? Math.round((totalDone / totalSteps) * 100) : 0;
+                    const activeIntegrations = Object.values(integrations).filter(Boolean).length;
+                    const totalIntegrations = Object.keys(integrations).length;
+                    return (
+                      <div style={{ marginBottom: 16, padding: "14px 16px", background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.2)", borderRadius: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                          <span style={{ fontSize: 13, color: "#E8F1FF", fontWeight: 600 }}>Setup-voortgang</span>
+                          <span style={{ fontSize: 12, color: CYAN, fontWeight: 700 }}>{pct}%</span>
                         </div>
-                        <div style={{ fontSize: 10, color: "rgba(180,210,255,.45)", marginTop: 4 }}>{c.connected ? "Koppeling actief" : `${c.done} van ${c.total} stappen afgevinkt`}</div>
+                        <div style={{ height: 5, borderRadius: 3, background: "rgba(255,255,255,.1)", overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${pct}%`, background: `linear-gradient(90deg, ${CYAN}, #7F77DD)`, borderRadius: 3, transition: "width .5s ease" }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 8 }}>
+                          {totalDone} van {totalSteps} stappen afgerond · {activeIntegrations} van {totalIntegrations} koppelingen actief
+                        </div>
                       </div>
-                      <span style={{ color: "rgba(180,210,255,.5)", fontSize: 18 }}>›</span>
-                    </div>
-                  ))}
+                    );
+                  })()}
+
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginBottom: 12, lineHeight: 1.5, padding: "10px 12px", background: "rgba(56,230,255,.05)", borderRadius: 8, border: "1px solid rgba(56,230,255,.15)" }}>
+                    <strong style={{ color: CYAN }}>Veilig:</strong> wachtwoorden en sleutels staan in Vercel of in NOVA's eigen opslag - niet in deze checklist. NOVA detecteert zelf of een koppeling actief is en zet hem groen.
+                  </div>
+                  {onboarding.map((c) => {
+                    const statusLabel = c.complete ? "Actief" : c.done > 0 ? "In uitvoering" : "Nog niet gestart";
+                    const statusColor = c.complete ? "#5DCAA5" : c.done > 0 ? AMBER : "rgba(180,210,255,.5)";
+                    const statusBg = c.complete ? "rgba(29,158,117,.15)" : c.done > 0 ? "rgba(239,159,39,.12)" : "rgba(180,210,255,.08)";
+                    return (
+                      <div key={c.key} onClick={() => setOpenOnboard(c)} role="button" tabIndex={0} style={{ display: "flex", gap: 12, padding: "14px 14px", marginBottom: 8, background: c.complete ? "rgba(29,158,117,.06)" : "rgba(255,255,255,.025)", border: `1px solid ${c.complete ? "rgba(29,158,117,.25)" : "rgba(180,210,255,.12)"}`, borderRadius: 10, cursor: "pointer", alignItems: "center" }}>
+                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: c.complete ? "#1D9E75" : "rgba(255,255,255,.08)", color: c.complete ? "#fff" : "rgba(180,210,255,.5)", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: c.complete ? "none" : "1px solid rgba(180,210,255,.2)" }}>{c.complete ? "✓" : c.done}</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 14, color: "#fff", fontWeight: 500 }}>{c.title}</span>
+                            <span style={{ fontSize: 10, color: statusColor, background: statusBg, padding: "2px 8px", borderRadius: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".4px" }}>{statusLabel}</span>
+                          </div>
+                          <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 4, lineHeight: 1.5 }}>{c.intent}</div>
+                          <div style={{ marginTop: 8, height: 3, borderRadius: 2, background: "rgba(255,255,255,.1)" }}>
+                            <div style={{ height: "100%", width: `${Math.round((c.done / c.total) * 100)}%`, background: c.complete ? "#1D9E75" : c.done > 0 ? AMBER : CYAN, borderRadius: 2, transition: "width .4s ease" }} />
+                          </div>
+                          <div style={{ fontSize: 10, color: "rgba(180,210,255,.45)", marginTop: 4 }}>{c.done} van {c.total} stappen</div>
+                        </div>
+                        <span style={{ color: "rgba(180,210,255,.5)", fontSize: 18 }}>›</span>
+                      </div>
+                    );
+                  })}
                 </>
               )}
 
@@ -1441,9 +1624,12 @@ function Nova({ token, onLogout }) {
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {openOnboard.steps.map((s, i) => (
                     <div key={s.id} style={{ display: "flex", gap: 12, padding: "12px 14px", background: s.done ? "rgba(29,158,117,.07)" : "rgba(255,255,255,.025)", border: `1px solid ${s.done ? "rgba(29,158,117,.25)" : "rgba(180,210,255,.12)"}`, borderRadius: 10, alignItems: "flex-start" }}>
-                      <button onClick={() => toggleOnboardStep(s.id, !s.done)} style={{ width: 22, height: 22, borderRadius: 6, background: s.done ? "#1D9E75" : "transparent", color: "#fff", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1, border: s.done ? "none" : "1.5px solid rgba(180,210,255,.3)", cursor: "pointer" }}>{s.done ? "✓" : ""}</button>
+                      <button onClick={() => !s.auto && toggleOnboardStep(s.id, !s.done)} disabled={s.auto} title={s.auto ? "NOVA detecteert deze stap automatisch" : "Klik om af te vinken"} style={{ width: 22, height: 22, borderRadius: 6, background: s.done ? "#1D9E75" : "transparent", color: "#fff", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1, border: s.done ? "none" : "1.5px solid rgba(180,210,255,.3)", cursor: s.auto ? "default" : "pointer", opacity: s.auto && !s.done ? 0.5 : 1 }}>{s.done ? "✓" : ""}</button>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13, color: s.done ? "rgba(180,210,255,.55)" : "#fff", fontWeight: 500, textDecoration: s.done ? "line-through" : "none" }}>{i + 1}. {s.title}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 13, color: s.done ? "rgba(180,210,255,.55)" : "#fff", fontWeight: 500, textDecoration: s.done ? "line-through" : "none" }}>{i + 1}. {s.title}</span>
+                          {s.auto && (<span style={{ fontSize: 9, color: CYAN, background: "rgba(56,230,255,.1)", padding: "1px 6px", borderRadius: 4, letterSpacing: ".4px", fontWeight: 600 }}>AUTO</span>)}
+                        </div>
                         <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 4, lineHeight: 1.55 }}>{s.help}</div>
                       </div>
                     </div>
@@ -1453,8 +1639,13 @@ function Nova({ token, onLogout }) {
             </div>
 
             {!openOnboard && (
-              <div style={{ padding: "12px 18px", borderTop: "1px solid rgba(56,230,255,.1)", fontSize: 11, color: "rgba(180,210,255,.5)", lineHeight: 1.5 }}>
-                Na een nieuwe sleutel in Vercel: opnieuw deployen zonder build-cache, dan dit paneel weer openen.
+              <div style={{ padding: "12px 18px", borderTop: "1px solid rgba(56,230,255,.1)", display: "flex", alignItems: "center", gap: 10 }}>
+                <button onClick={downloadBackup} style={{ background: "rgba(127,119,221,.12)", border: "1px solid rgba(127,119,221,.4)", color: "#B3ADEE", borderRadius: 10, padding: "8px 14px", fontSize: 12, cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 14 }}>💾</span> Backup downloaden
+                </button>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.5)", lineHeight: 1.4, flex: 1 }}>
+                  Maak vóór grote wijzigingen een backup. NOVA bewaart alle instellingen, lijsten en data.
+                </div>
               </div>
             )}
           </div>
