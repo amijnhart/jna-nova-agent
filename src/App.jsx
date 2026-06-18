@@ -697,11 +697,23 @@ function Nova({ token, onLogout }) {
       });
       const d = await res.json();
       if (Array.isArray(d.items)) setImprovements(d.items);
-      // Visuele bevestiging: toast verschijnt en het ✨-icoon pulseert kort
-      setToast({ icon: "✨", text: "Verbeterpunt opgeslagen", color: AMBER });
-      setTimeout(() => setToast(null), 2800);
-      setImproveJustAdded(true);
-      setTimeout(() => setImproveJustAdded(false), 1500);
+      // Visuele bevestiging: toast vliegt naar het ✨-icoon. Eerst meten we waar
+      // het icoon zich bevindt. Op het moment van setImprovements is het icoon
+      // (mogelijk net pas) zichtbaar; we wachten een frame zodat React kan
+      // renderen voor we de positie meten.
+      requestAnimationFrame(() => {
+        const iconEl = improveIconRef.current;
+        let target = null;
+        if (iconEl) {
+          const r = iconEl.getBoundingClientRect();
+          target = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+        setToast({ icon: "✨", text: "Verbeterpunt opgeslagen", color: AMBER, target });
+        setTimeout(() => setToast(null), 2400);
+        // Het icoon pulseert kort op aankomst van de toast
+        setTimeout(() => setImproveJustAdded(true), 1400);
+        setTimeout(() => setImproveJustAdded(false), 2900);
+      });
     } catch (e) { void e; }
   }
 
@@ -1317,6 +1329,7 @@ function Nova({ token, onLogout }) {
 
   // Audio-element voor OpenAI TTS afspelen. Eén element dat we steeds hergebruiken.
   const ttsAudioRef = useRef(null);
+  const improveIconRef = useRef(null); // referentie naar het ✨-icoon zodat de toast er heen kan vliegen
   useEffect(() => {
     ttsAudioRef.current = new Audio();
     ttsAudioRef.current.preload = "auto";
@@ -1673,6 +1686,7 @@ function Nova({ token, onLogout }) {
         @keyframes orbBloom{0%{box-shadow:0 0 0 0 rgba(56,230,255,.6),inset 0 0 20px rgba(56,230,255,.25)}50%{box-shadow:0 0 80px 20px rgba(56,230,255,.4),inset 0 0 30px rgba(56,230,255,.4)}100%{box-shadow:0 0 30px rgba(56,230,255,.35),inset 0 0 20px rgba(56,230,255,.25)}}
         @keyframes dashMove{from{stroke-dashoffset:0}to{stroke-dashoffset:-20}}
         @keyframes toastSlide{0%{opacity:0;transform:translateY(-12px)}10%{opacity:1;transform:translateY(0)}85%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(-8px)}}
+        @keyframes toastFly{0%{opacity:0;transform:translate(0,-12px) scale(1)}8%{opacity:1;transform:translate(0,0) scale(1)}45%{opacity:1;transform:translate(0,0) scale(1)}75%{opacity:.9;transform:translate(var(--toast-dx),var(--toast-dy)) scale(.35)}100%{opacity:0;transform:translate(var(--toast-dx),var(--toast-dy)) scale(.15)}}
         @keyframes iconPulse{0%,100%{transform:scale(1);filter:brightness(1)}30%{transform:scale(1.35);filter:brightness(1.5)}60%{transform:scale(1.1);filter:brightness(1.2)}}
         .icon-just-saved .panel-icon-circle{animation:iconPulse 1.5s ease-out;box-shadow:0 0 24px ${AMBER}}
         .ring{position:absolute;border-radius:50%;border:1px solid rgba(56,230,255,.25)}
@@ -1856,13 +1870,15 @@ function Nova({ token, onLogout }) {
               eromheen verbonden met SVG-lijnen. Elke agent is los klikbaar voor zijn
               eigen detail-paneel. */}
           {posts.flatMap((post) => {
-            // Vaste positionering per rol voor visuele consistentie en lijnen die kloppen.
-            // Coordinaten zijn percentages binnen het cirkel-gebied (orb-area).
+            // Posities voor de agent-kaarten. Marketing linksboven (de regisseur),
+            // de drie specialisten in een ruime driehoek eromheen. De verbindings-
+            // lijnen krommen om de cirkel heen via bezier curves zodat ze niet door
+            // de planeet snijden.
             const POSITIONS = {
-              marketing: { x: 18, y: 22 },  // linksboven (regisseur)
-              content:   { x: 82, y: 32 },  // rechtsboven
-              visual:    { x: 82, y: 68 },  // rechtsonder
-              video:     { x: 18, y: 80 },  // linksonder
+              marketing: { x: 16, y: 18 },  // linksboven (regisseur)
+              content:   { x: 84, y: 18 },  // rechtsboven (zelfde hoogte als marketing)
+              visual:    { x: 84, y: 82 },  // rechtsonder
+              video:     { x: 16, y: 82 },  // linksonder
             };
             const marketingPos = POSITIONS.marketing;
             const hasProduction = post.agents.some((a) => a.role !== "marketing");
@@ -1871,7 +1887,7 @@ function Nova({ token, onLogout }) {
               // SVG-laag met lijnen van Marketing naar de drie specialisten, ALLEEN
               // wanneer de productie-fase actief is.
               hasProduction && (
-                <svg key={post.id + "-lines"} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1 }} preserveAspectRatio="none">
+                <svg key={post.id + "-lines"} viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1 }} preserveAspectRatio="none">
                   {["content", "visual", "video"].map((role) => {
                     const target = POSITIONS[role];
                     const agent = post.agents.find((a) => a.role === role);
@@ -1879,12 +1895,32 @@ function Nova({ token, onLogout }) {
                     const active = agent.state === "running";
                     const done = agent.state === "done";
                     const stroke = done ? "#1D9E75" : active ? AMBER : "rgba(127,119,221,.4)";
+
+                    // Bereken een controlepunt dat de bocht om de cirkel heen duwt.
+                    // We pakken het midden van Marketing-naar-doel, en duwen dat punt
+                    // radiaal naar buiten weg van het centrum (50,50).
+                    const mx = (marketingPos.x + target.x) / 2;
+                    const my = (marketingPos.y + target.y) / 2;
+                    // Vector vanaf centrum naar middenpunt
+                    let vx = mx - 50;
+                    let vy = my - 50;
+                    const len = Math.sqrt(vx * vx + vy * vy) || 1;
+                    // Normaliseer en schaal: bocht duwt 32 procentpunt naar buiten
+                    const push = 32;
+                    const cx = mx + (vx / len) * push;
+                    const cy = my + (vy / len) * push;
+                    const path = `M ${marketingPos.x} ${marketingPos.y} Q ${cx} ${cy} ${target.x} ${target.y}`;
+
                     return (
-                      <line
+                      <path
                         key={role}
-                        x1={`${marketingPos.x}%`} y1={`${marketingPos.y}%`}
-                        x2={`${target.x}%`}      y2={`${target.y}%`}
-                        stroke={stroke} strokeWidth="1.5" strokeDasharray={active ? "6 4" : "none"} opacity="0.55"
+                        d={path}
+                        fill="none"
+                        stroke={stroke}
+                        strokeWidth="1.5"
+                        strokeDasharray={active ? "6 4" : "none"}
+                        opacity="0.55"
+                        vectorEffect="non-scaling-stroke"
                         style={active ? { animation: "dashMove 1.2s linear infinite" } : {}}
                       />
                     );
@@ -1953,7 +1989,7 @@ function Nova({ token, onLogout }) {
               const x = 50 + Math.cos(angle) * radius;
               const y = 50 + Math.sin(angle) * radius * 0.78;
               return (
-                <div key={p.key} className={`panel-icon${p.key === "imp" && improveJustAdded ? " icon-just-saved" : ""}`} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)", zIndex: 4 }} onClick={p.onClick} role="button" tabIndex={0}>
+                <div key={p.key} ref={p.key === "imp" ? improveIconRef : null} className={`panel-icon${p.key === "imp" && improveJustAdded ? " icon-just-saved" : ""}`} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)", zIndex: 4 }} onClick={p.onClick} role="button" tabIndex={0}>
                   <div className="panel-icon-circle" style={{ borderColor: `${p.color}55`, color: p.color }}>
                     <span style={{ fontSize: 16 }}>{p.icon}</span>
                   </div>
@@ -2470,7 +2506,7 @@ function Nova({ token, onLogout }) {
                   <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.15)", background: "rgba(56,230,255,.04)" }}>
                     <div style={{ flex: 1, fontSize: 12, color: "rgba(180,210,255,.8)", alignSelf: "center" }}>Akkoord met dit plan? Dan gaat het team het maken.</div>
                     <button onClick={() => rejectConcept(post.id)} style={{ border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "9px 14px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Afwijzen</button>
-                    <button onClick={() => approveConcept(post.id)} style={{ border: "none", borderRadius: 10, padding: "9px 18px", background: "linear-gradient(135deg, #1D9E75, #0F6E56)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Akkoord → laat ze maken</button>
+                    <button onClick={() => { approveConcept(post.id); setOpenPost(null); }} style={{ border: "none", borderRadius: 10, padding: "9px 18px", background: "linear-gradient(135deg, #1D9E75, #0F6E56)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Akkoord → laat ze maken</button>
                   </div>
                 </>
               )}
@@ -2848,14 +2884,30 @@ function Nova({ token, onLogout }) {
           </div>
         </div>
       )}
-      {toast && (
-        <div style={{ position: "fixed", top: 80, left: "50%", transform: "translateX(-50%)", zIndex: 50, animation: "toastSlide 2.8s ease-in-out forwards", pointerEvents: "none" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 18px", background: "rgba(6,24,47,.95)", border: `1px solid ${toast.color || CYAN}`, borderRadius: 22, color: "#E8F1FF", fontSize: 13, fontWeight: 500, boxShadow: `0 4px 20px ${toast.color || CYAN}55`, backdropFilter: "blur(10px)" }}>
-            <span style={{ fontSize: 16 }}>{toast.icon}</span>
-            <span>{toast.text}</span>
+      {toast && (() => {
+        // Als er een doel is (✨-icoon positie) berekenen we van waar naar waar.
+        // De toast staat op fixed top 80px, midden horizontaal. We berekenen het
+        // verschil tussen die startpositie en het doel.
+        const hasTarget = !!toast.target;
+        let dx = 0, dy = 0;
+        if (hasTarget && typeof window !== "undefined") {
+          // Startpunt is rond center-x van het venster, top 80px + ~20px hoogte
+          const startX = window.innerWidth / 2;
+          const startY = 80 + 22;
+          dx = toast.target.x - startX;
+          dy = toast.target.y - startY;
+        }
+        const styleVars = hasTarget ? { "--toast-dx": `${dx}px`, "--toast-dy": `${dy}px` } : {};
+        const animName = hasTarget ? "toastFly 2.4s cubic-bezier(.5,.05,.3,1) forwards" : "toastSlide 2.4s ease-in-out forwards";
+        return (
+          <div style={{ position: "fixed", top: 80, left: "50%", marginLeft: -120, width: 240, zIndex: 50, animation: animName, pointerEvents: "none", ...styleVars }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "10px 18px", background: "rgba(6,24,47,.95)", border: `1px solid ${toast.color || CYAN}`, borderRadius: 22, color: "#E8F1FF", fontSize: 13, fontWeight: 500, boxShadow: `0 4px 20px ${toast.color || CYAN}55`, backdropFilter: "blur(10px)" }}>
+              <span style={{ fontSize: 16 }}>{toast.icon}</span>
+              <span>{toast.text}</span>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
