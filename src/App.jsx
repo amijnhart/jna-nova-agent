@@ -8,6 +8,7 @@ const CHAT_URL = "/api/chat";
 const LOGIN_URL = "/api/login";
 const IMPROVE_URL = "/api/data?type=improvements";
 const INBOX_URL = "/api/mail?action=inbox";
+const BOEKSY_URL = "/api/boeksy?action=overview";
 const CATALOG_URL = "/api/data?type=catalog";
 const CALENDAR_URL = "/api/data?type=calendar";
 const ONBOARDING_URL = "/api/onboarding?action=status";
@@ -89,10 +90,19 @@ function parseReply(raw) {
   return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post, voice };
 }
 
-function orbitPos() {
-  const a = Math.random() * Math.PI * 2;
-  const r = 30 + Math.random() * 14;
-  return { x: 50 + Math.cos(a) * r, y: 50 + Math.sin(a) * r * 0.82 };
+// Actie-sterren plaatsen in een veilige zone rond de cirkel. We vermijden
+// de buitenrand (waar panel-iconen zitten) en de vier post-agent posities,
+// zodat tekst niet door elkaar loopt.
+function orbitPos(index = 0, total = 1) {
+  // Verdeel de actie-sterren over een ring vlak onder de cirkel (radius 28-32),
+  // gespreid in een halve cirkel onderaan zodat ze niet overlappen met panel-iconen.
+  // Start bij 30° (rechtsonder) en verdeel over 120° (tot 150° = linksonder).
+  const startAngle = Math.PI * 0.15; // ~27°
+  const totalAngle = Math.PI * 0.7;  // ~126°
+  const step = total > 1 ? totalAngle / (total - 1) : 0;
+  const a = startAngle + step * index;
+  const r = 28;
+  return { x: 50 + Math.cos(a) * r, y: 65 + Math.sin(a) * r * 0.5 };
 }
 
 const TASK_SLOTS = [
@@ -363,6 +373,10 @@ function Nova({ token, onLogout }) {
   const [showImap, setShowImap] = useState(false);
   const [integrations, setIntegrations] = useState(null); // {mail:{active}, whatsapp:{active}, images:{active}, storage:{active}}
   const [emails, setEmails] = useState([]); // recente mails uit IMAP-inbox, meegestuurd naar chat als context
+  const [boeksy, setBoeksy] = useState(null); // {configured, relations, invoices, quotes, profitLoss}
+  const [showBoeksy, setShowBoeksy] = useState(false);
+  const [openAgentDetail, setOpenAgentDetail] = useState(null); // {postId, role}
+  const [agentFeedbackDraft, setAgentFeedbackDraft] = useState({}); // role -> tekst
   const [status, setStatus] = useState("Online · klaar voor je opdracht");
   const [micSupported, setMicSupported] = useState(true);
   const [actions, setActions] = useState([]);
@@ -396,11 +410,13 @@ function Nova({ token, onLogout }) {
   const tasksRef = useRef([]);
   const integrationsRef = useRef({});
   const emailsRef = useRef([]);
+  const boeksyRef = useRef(null);
 
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
   useEffect(() => { catalogRef.current = catalog; }, [catalog]);
   useEffect(() => { integrationsRef.current = integrations; }, [integrations]);
   useEffect(() => { emailsRef.current = emails; }, [emails]);
+  useEffect(() => { boeksyRef.current = boeksy; }, [boeksy]);
 
   // Periodieke statuscheck (elke 30 sec). NOVA detecteert zelf wanneer een
   // integratie nieuw actief wordt en kondigt dat aan.
@@ -477,6 +493,11 @@ function Nova({ token, onLogout }) {
         const r6 = await fetch("/api/mail?action=settings", { headers: { Authorization: "Bearer " + token } });
         const d6 = await r6.json();
         setImapCfg(d6);
+      } catch (e) { void e; }
+      try {
+        const rB = await fetch(BOEKSY_URL, { headers: { Authorization: "Bearer " + token } });
+        const dB = await rB.json();
+        setBoeksy(dB);
       } catch (e) { void e; }
       try {
         const r7 = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
@@ -909,6 +930,70 @@ function Nova({ token, onLogout }) {
     setPosts((prev) => prev.map((p) => p.id === postId ? { ...p, phase: "approved" } : p));
   }
 
+  // Specialist herzien op basis van gebruikersfeedback. Marketing kijkt of de
+  // wijziging ook impact heeft op de andere specialisten en past die zo nodig aan.
+  async function reviseAgent(postId, role, feedback) {
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+    const currentOutput = role === "content" ? post.copy : role === "visual" ? post.visual : role === "video" ? post.regie : "";
+
+    // Zet de te herziene agent terug op "running"
+    setPosts((prev) => prev.map((p) => {
+      if (p.id !== postId) return p;
+      return {
+        ...p,
+        phase: "production-running",
+        agents: p.agents.map((a) => a.role === role ? { ...a, state: "running", progress: 12 } : a),
+      };
+    }));
+
+    try {
+      const res = await fetch(POST_WORKFLOW_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ phase: "revise", channel: post.channel, topic: post.topic, concept: post.strategie, role, feedback, currentOutput, catalog: catalogRef.current }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "herziening fout");
+
+      setPosts((prev) => prev.map((p) => {
+        if (p.id !== postId) return p;
+        const next = { ...p, phase: "production-awaiting" };
+        // Werk het hoofd-veld bij van de gevraagde rol
+        if (role === "content") next.copy = d.newOutput;
+        else if (role === "visual") next.visual = d.newOutput;
+        else if (role === "video") next.regie = d.newOutput;
+        // Werk eventuele andere specialisten bij als Marketing aangaf dat ze ook moeten worden aangepast
+        if (d.otherUpdates) {
+          if (d.otherUpdates.content) next.copy = d.otherUpdates.content;
+          if (d.otherUpdates.visual) next.visual = d.otherUpdates.visual;
+          if (d.otherUpdates.video) next.regie = d.otherUpdates.video;
+        }
+        // Nieuwe image prompts? Reset gegenereerde beelden zodat ze opnieuw gemaakt worden
+        if (d.newImagePrompts && d.newImagePrompts.length) {
+          next.imagePrompts = d.newImagePrompts;
+          next.images = [];
+        }
+        next.agents = p.agents.map((a) => {
+          if (a.role === role || (d.otherUpdates && d.otherUpdates[a.role])) {
+            return { ...a, state: "done", progress: 100 };
+          }
+          return a;
+        });
+        next.marketingNote = d.marketingNote || null;
+        return next;
+      }));
+
+      const melding = d.marketingNote
+        ? `Aanpassing doorgevoerd. Marketing heeft ook de andere specialisten laten bijwerken: ${d.marketingNote}`
+        : `Aanpassing doorgevoerd in ${role}. De andere onderdelen blijven ongewijzigd.`;
+      setMessages((m) => [...m, { role: "assistant", content: melding }]);
+      if (voiceOn) speak(melding);
+    } catch (err) {
+      setPosts((prev) => prev.map((p) => p.id === postId ? { ...p, phase: "error", error: err.message } : p));
+    }
+  }
+
   useEffect(() => {
     setIdleStars(Array.from({ length: 6 }, (_, i) => ({ id: "idle-" + i, ...orbitPos(), delay: Math.random() * 7, dur: 7 + Math.random() * 4, size: 5 + Math.random() * 4 })));
     const iv = setInterval(() => { setIdleStars((prev) => prev.map((s) => (Math.random() < 0.4 ? { ...s, ...orbitPos() } : s))); }, 3500);
@@ -1010,7 +1095,7 @@ function Nova({ token, onLogout }) {
   }
 
   const placeActions = useCallback((list) => {
-    setActions(list.map((label, i) => ({ id: "act-" + Date.now() + "-" + i, label, ...orbitPos() })));
+    setActions(list.map((label, i) => ({ id: "act-" + Date.now() + "-" + i, label, ...orbitPos(i, list.length) })));
   }, []);
 
   async function callBackend(msgs, mode) {
@@ -1023,10 +1108,18 @@ function Nova({ token, onLogout }) {
       urgent: !!m.urgent,
       received: m.received,
     }));
+    // Compacte Boeksy-context: klanten, recente facturen/offertes, W&V
+    const b = boeksyRef.current;
+    const boeksyContext = (b && b.configured) ? {
+      relations: (b.relations || []).slice(0, 30).map((r) => ({ name: r.name, type: r.type, email: r.email })),
+      invoices: (b.invoices || []).slice(0, 15).map((i) => ({ number: i.number, date: i.date, subject: i.subject, total: i.total, status: i.status, klant: i.relation })),
+      quotes: (b.quotes || []).slice(0, 15).map((q) => ({ number: q.number, date: q.date, subject: q.subject, total: q.total, status: q.status, klant: q.relation })),
+      profitLoss: b.profitLoss || null,
+    } : null;
     const res = await fetch(CHAT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify({ messages: msgs, mode, catalog: catalogRef.current, integrations, voiceRate, emails: mailContext }),
+      body: JSON.stringify({ messages: msgs, mode, catalog: catalogRef.current, integrations, voiceRate, emails: mailContext, boeksy: boeksyContext }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) { onLogout(); throw new Error("Sessie verlopen, log opnieuw in."); }
@@ -1091,8 +1184,15 @@ function Nova({ token, onLogout }) {
       }
     }
     if (label === "toon op scherm" || label === "laat zien" || label === "open") {
+      // In conceptfase tonen we de pop-up (één plek met concept).
+      // In productiefase openen we direct het Marketing-detail; de gebruiker klikt
+      // dan op specifieke specialisten als hij daar wil bijsturen.
       const recent = posts.find((p) => p.phase === "concept-awaiting" || p.phase === "production-awaiting");
-      if (recent) { setOpenPost(recent.id); return; }
+      if (recent) {
+        if (recent.phase === "concept-awaiting") setOpenPost(recent.id);
+        else setOpenAgentDetail({ postId: recent.id, role: "marketing" });
+        return;
+      }
     }
     if (label === "later" || label === "later terug" || label === "kom later terug") {
       const melding = "Goed, ik kom er later op terug.";
@@ -1202,6 +1302,7 @@ function Nova({ token, onLogout }) {
         @keyframes taskIn{0%{opacity:0;transform:translate(-50%,-50%) scale(.6)}100%{opacity:1;transform:translate(-50%,-50%) scale(1)}}
         @keyframes orbEnter{0%{transform:scale(.5) translateY(-12px);opacity:.4;filter:brightness(1.8)}60%{transform:scale(1.08) translateY(0);opacity:1;filter:brightness(1.3)}100%{transform:scale(1) translateY(0);opacity:1;filter:brightness(1)}}
         @keyframes orbBloom{0%{box-shadow:0 0 0 0 rgba(56,230,255,.6),inset 0 0 20px rgba(56,230,255,.25)}50%{box-shadow:0 0 80px 20px rgba(56,230,255,.4),inset 0 0 30px rgba(56,230,255,.4)}100%{box-shadow:0 0 30px rgba(56,230,255,.35),inset 0 0 20px rgba(56,230,255,.25)}}
+        @keyframes dashMove{from{stroke-dashoffset:0}to{stroke-dashoffset:-20}}
         .ring{position:absolute;border-radius:50%;border:1px solid rgba(56,230,255,.25)}
         .idle-star{position:absolute;border-radius:50%;background:${CYAN};box-shadow:0 0 8px ${CYAN},0 0 16px rgba(56,230,255,.5);transform:translate(-50%,-50%);transition:left 3s ease-in-out,top 3s ease-in-out;pointer-events:none;animation:starFade linear infinite}
         .act-star{position:absolute;transform:translate(-50%,-50%);animation:actIn .45s cubic-bezier(.2,1.3,.5,1) both;cursor:pointer;z-index:5}
@@ -1304,28 +1405,71 @@ function Nova({ token, onLogout }) {
             );
           })}
 
-          {/* Post-agents rond de cirkel: elke agent (Marketing, Content, Visual, Video) als eigen kaart */}
-          {posts.flatMap((post) => post.agents.map((agent) => {
-            const slot = TASK_SLOTS[agent.slot] || TASK_SLOTS[0];
-            const col = agent.state === "done" ? "#1D9E75" : agent.state === "awaiting" ? CYAN : agent.state === "error" ? "#E24B4A" : AMBER;
-            const icon = agent.role === "marketing" ? "📣" : agent.role === "content" ? "✍️" : agent.role === "visual" ? "🎨" : agent.role === "video" ? "🎥" : "⚙️";
-            const key = post.id + "-" + agent.role;
-            return (
-              <div key={key} className="task-node" style={{ left: `${slot.x}%`, top: `${slot.y}%` }} onClick={() => setOpenPost(post.id)} role="button" tabIndex={0}>
-                <div className="task-card" style={{ borderColor: agent.state === "awaiting" ? CYAN : undefined }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                    <span style={{ fontSize: 13 }}>{icon}</span>
-                    <span style={{ fontSize: 10, color: "rgba(180,210,255,.7)", textTransform: "uppercase", letterSpacing: ".5px" }}>{agent.role}</span>
-                    <span style={{ marginLeft: "auto", fontSize: 9, color: col }}>{agent.state === "done" ? "klaar" : agent.state === "awaiting" ? "akkoord?" : agent.state === "error" ? "fout" : Math.round(agent.progress) + "%"}</span>
+          {/* Post-agents rond de cirkel: Marketing als regisseur, drie specialisten
+              eromheen verbonden met SVG-lijnen. Elke agent is los klikbaar voor zijn
+              eigen detail-paneel. */}
+          {posts.flatMap((post) => {
+            // Vaste positionering per rol voor visuele consistentie en lijnen die kloppen.
+            // Coordinaten zijn percentages binnen het cirkel-gebied (orb-area).
+            const POSITIONS = {
+              marketing: { x: 18, y: 22 },  // linksboven (regisseur)
+              content:   { x: 82, y: 32 },  // rechtsboven
+              visual:    { x: 82, y: 68 },  // rechtsonder
+              video:     { x: 18, y: 80 },  // linksonder
+            };
+            const marketingPos = POSITIONS.marketing;
+            const hasProduction = post.agents.some((a) => a.role !== "marketing");
+
+            return [
+              // SVG-laag met lijnen van Marketing naar de drie specialisten, ALLEEN
+              // wanneer de productie-fase actief is.
+              hasProduction && (
+                <svg key={post.id + "-lines"} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1 }} preserveAspectRatio="none">
+                  {["content", "visual", "video"].map((role) => {
+                    const target = POSITIONS[role];
+                    const agent = post.agents.find((a) => a.role === role);
+                    if (!agent) return null;
+                    const active = agent.state === "running";
+                    const done = agent.state === "done";
+                    const stroke = done ? "#1D9E75" : active ? AMBER : "rgba(127,119,221,.4)";
+                    return (
+                      <line
+                        key={role}
+                        x1={`${marketingPos.x}%`} y1={`${marketingPos.y}%`}
+                        x2={`${target.x}%`}      y2={`${target.y}%`}
+                        stroke={stroke} strokeWidth="1.5" strokeDasharray={active ? "6 4" : "none"} opacity="0.55"
+                        style={active ? { animation: "dashMove 1.2s linear infinite" } : {}}
+                      />
+                    );
+                  })}
+                </svg>
+              ),
+              // De agent-kaartjes zelf
+              ...post.agents.map((agent) => {
+                const pos = POSITIONS[agent.role] || { x: 50, y: 50 };
+                const col = agent.state === "done" ? "#1D9E75" : agent.state === "awaiting" ? CYAN : agent.state === "error" ? "#E24B4A" : AMBER;
+                const icon = agent.role === "marketing" ? "📣" : agent.role === "content" ? "✍️" : agent.role === "visual" ? "🎨" : agent.role === "video" ? "🎥" : "⚙️";
+                const label = agent.role === "marketing" ? "marketing" : agent.role;
+                const key = post.id + "-" + agent.role;
+                const isMarketing = agent.role === "marketing";
+                return (
+                  <div key={key} className="task-node" style={{ left: `${pos.x}%`, top: `${pos.y}%`, zIndex: 3 }} onClick={() => setOpenAgentDetail({ postId: post.id, role: agent.role })} role="button" tabIndex={0}>
+                    <div className="task-card" style={{ borderColor: agent.state === "awaiting" ? CYAN : (isMarketing ? "rgba(127,119,221,.45)" : undefined), background: isMarketing ? "rgba(127,119,221,.08)" : undefined }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                        <span style={{ fontSize: 13 }}>{icon}</span>
+                        <span style={{ fontSize: 10, color: "rgba(180,210,255,.7)", textTransform: "uppercase", letterSpacing: ".5px" }}>{label}</span>
+                        <span style={{ marginLeft: "auto", fontSize: 9, color: col }}>{agent.state === "done" ? "klaar" : agent.state === "awaiting" ? "akkoord?" : agent.state === "error" ? "fout" : Math.round(agent.progress) + "%"}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#E8F1FF", lineHeight: 1.3, marginBottom: 6, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{agent.name}</div>
+                      <div style={{ height: 3, borderRadius: 2, background: "rgba(255,255,255,.12)", overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${agent.progress}%`, background: col, borderRadius: 2, transition: "width .6s ease" }} />
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 11, color: "#E8F1FF", lineHeight: 1.3, marginBottom: 6, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{agent.name}</div>
-                  <div style={{ height: 3, borderRadius: 2, background: "rgba(255,255,255,.12)", overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${agent.progress}%`, background: col, borderRadius: 2, transition: "width .6s ease" }} />
-                  </div>
-                </div>
-              </div>
-            );
-          }))}
+                );
+              })
+            ].filter(Boolean);
+          })}
 
           {/* Panel-iconen rond de cirkel - alleen icoon, label en badge bij hover.
               Verschijnen alleen als er inhoud is. */}
@@ -1335,6 +1479,7 @@ function Nova({ token, onLogout }) {
               improvements.length > 0 && { key: "imp", icon: "✨", color: AMBER, label: "Verbeteringen", count: improvements.length, onClick: () => setShowImprove(true) },
               history.length > 0 && { key: "his", icon: "✓", color: "#5DCAA5", label: "Historie", count: history.length, onClick: () => setShowHistory(true) },
               { key: "mail", icon: "📧", color: imapCfg?.configured ? "#5DCAA5" : AMBER, label: imapCfg?.configured ? "E-mail" : "E-mail instellen", count: 0, onClick: () => setShowImap(true) },
+              boeksy?.configured && { key: "boeksy", icon: "💼", color: "#5DCAA5", label: "Boekhouding", count: 0, onClick: () => setShowBoeksy(true) },
               { key: "cat", icon: "📦", color: CYAN, label: "Materieel", count: catalog.length, onClick: () => setShowCatalog(true) },
               { key: "cal", icon: "🗓️", color: "#B3ADEE", label: "Kalender", count: calendar.length, onClick: () => setShowCalendar(true) },
               open > 0 && { key: "set", icon: "🧭", color: "rgba(220,238,255,.85)", label: "Setup", count: open, onClick: () => setShowOnboard(true) },
@@ -1360,22 +1505,35 @@ function Nova({ token, onLogout }) {
             });
           })()}
 
-          <div style={{ position: "relative", width: 320, height: 320, animation: justEntered ? "orbEnter 1.6s cubic-bezier(.2,1.1,.3,1) both, float 6s ease-in-out infinite 1.6s" : "float 6s ease-in-out infinite", zIndex: 2 }}>
-            <div className="ring" style={{ inset: 0, animation: "spinR 24s linear infinite", borderTopColor: CYAN, borderBottomColor: "transparent" }} />
-            <div className="ring" style={{ inset: 20, animation: "spinL 30s linear infinite", borderBottomColor: PURPLE, borderTopColor: "transparent" }} />
-            <div className="ring" style={{ inset: 44, animation: "spinR 18s linear infinite", borderColor: "rgba(56,230,255,.12)", borderTopColor: "rgba(56,230,255,.4)" }} />
-            <div style={{ position: "absolute", inset: 90, borderRadius: "50%", background: "radial-gradient(circle at 40% 35%, rgba(56,230,255,.35), rgba(127,119,221,.25) 60%, rgba(4,18,43,.9) 100%)", border: "1px solid rgba(56,230,255,.4)", boxShadow: coreShadow, display: "flex", alignItems: "center", justifyContent: "center", transition: orbState === "speaking" ? "box-shadow .1s ease-out" : "box-shadow .4s", animation: justEntered ? "orbBloom 1.6s ease-out both" : (orbState === "idle" ? "pulse 4s ease-in-out infinite" : "none") }}>
-              <div style={{ fontSize: 18, fontWeight: 800, textAlign: "center", lineHeight: 1.1, letterSpacing: 1, color: "#fff", textShadow: `0 0 18px ${CYAN}` }}>
-                JnA<div style={{ fontSize: 10, letterSpacing: 3, color: CYAN, marginTop: 2 }}>EVENTS</div>
-              </div>
-              <div style={{ position: "absolute", left: "10%", right: "10%", height: 1, background: `linear-gradient(90deg, transparent, ${CYAN}, transparent)`, animation: "scan 3s ease-in-out infinite" }} />
-            </div>
-            {(speaking || listening) && (
-              <div style={{ position: "absolute", bottom: -24, left: 0, right: 0, display: "flex", justifyContent: "center", alignItems: "flex-end", gap: 4, height: 24 }}>
-                {[...Array(7)].map((_, i) => (<div key={i} style={{ width: 3, background: listening ? "#FF6B8A" : CYAN, borderRadius: 2, animation: `wave ${0.6 + (i % 3) * 0.2}s ease-in-out infinite`, animationDelay: `${i * 0.08}s` }} />))}
+          {(() => {
+            // Bereken hoe 'druk' NOVA is - dat bepaalt hoe snel de ringen draaien.
+            // Niet exact, maar voor het visuele effect: stilteweerspiegeling tot meervoud bij druk werk.
+            const activeAgents = tasks.filter((t) => t.state === "running").length
+              + posts.reduce((n, p) => n + p.agents.filter((a) => a.state === "running").length, 0);
+            const intensity = speaking ? 4 : (orbState === "thinking" ? 3 : (activeAgents > 0 ? 1.5 + Math.min(activeAgents, 4) * 0.4 : 1));
+            // Basis rotatieduur 24s/30s/18s gedeeld door intensiteit. Hoe lager de duur, hoe sneller.
+            const dur1 = (24 / intensity).toFixed(1);
+            const dur2 = (30 / intensity).toFixed(1);
+            const dur3 = (18 / intensity).toFixed(1);
+            return (
+              <div style={{ position: "relative", width: 320, height: 320, animation: justEntered ? "orbEnter 1.6s cubic-bezier(.2,1.1,.3,1) both" : "float 6s ease-in-out infinite", zIndex: 2 }}>
+                <div className="ring" style={{ inset: 0, animation: `spinR ${dur1}s linear infinite`, borderTopColor: CYAN, borderBottomColor: "transparent", transition: "animation-duration 1.5s ease" }} />
+                <div className="ring" style={{ inset: 20, animation: `spinL ${dur2}s linear infinite`, borderBottomColor: PURPLE, borderTopColor: "transparent", transition: "animation-duration 1.5s ease" }} />
+                <div className="ring" style={{ inset: 44, animation: `spinR ${dur3}s linear infinite`, borderColor: "rgba(56,230,255,.12)", borderTopColor: "rgba(56,230,255,.4)", transition: "animation-duration 1.5s ease" }} />
+                <div style={{ position: "absolute", inset: 90, borderRadius: "50%", background: "radial-gradient(circle at 40% 35%, rgba(56,230,255,.35), rgba(127,119,221,.25) 60%, rgba(4,18,43,.9) 100%)", border: "1px solid rgba(56,230,255,.4)", boxShadow: coreShadow, display: "flex", alignItems: "center", justifyContent: "center", transition: orbState === "speaking" ? "box-shadow .1s ease-out" : "box-shadow .4s", animation: justEntered ? "orbBloom 1.6s ease-out both" : (orbState === "idle" ? "pulse 4s ease-in-out infinite" : "none") }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, textAlign: "center", lineHeight: 1.1, letterSpacing: 1, color: "#fff", textShadow: `0 0 18px ${CYAN}` }}>
+                    JnA<div style={{ fontSize: 10, letterSpacing: 3, color: CYAN, marginTop: 2 }}>EVENTS</div>
+                  </div>
+                  <div style={{ position: "absolute", left: "10%", right: "10%", height: 1, background: `linear-gradient(90deg, transparent, ${CYAN}, transparent)`, animation: "scan 3s ease-in-out infinite" }} />
+                </div>
+                {(speaking || listening) && (
+                  <div style={{ position: "absolute", bottom: -24, left: 0, right: 0, display: "flex", justifyContent: "center", alignItems: "flex-end", gap: 4, height: 24 }}>
+                    {[...Array(7)].map((_, i) => (<div key={i} style={{ width: 3, background: listening ? "#FF6B8A" : CYAN, borderRadius: 2, animation: `wave ${0.6 + (i % 3) * 0.2}s ease-in-out infinite`, animationDelay: `${i * 0.08}s` }} />))}
               </div>
             )}
           </div>
+            );
+          })()}
           <div style={{ marginTop: 40, fontSize: 13, color: "rgba(180,210,255,.75)", letterSpacing: 1, zIndex: 2 }}>{stateLabel}</div>
           {tasks.filter((t) => t.state === "running").length > 0 && (<div style={{ marginTop: 8, fontSize: 11, color: AMBER, zIndex: 2 }}>{tasks.filter((t) => t.state === "running").length} agent(s) aan het werk</div>)}
         </div>
@@ -1663,6 +1821,13 @@ function Nova({ token, onLogout }) {
       {openPost && (() => {
         const post = posts.find((p) => p.id === openPost);
         if (!post) return null;
+        // In de productie-fase tonen we GEEN pop-up meer - de gebruiker klikt
+        // direct op de agents rond de cirkel. Wel in de conceptfase.
+        if (post.phase === "production-running" || post.phase === "production-awaiting" || post.phase === "approved") {
+          // Direct sluiten en doorsturen naar Marketing-detail
+          setTimeout(() => { setOpenPost(null); setOpenAgentDetail({ postId: post.id, role: "marketing" }); }, 0);
+          return null;
+        }
 
         const headerStatus = post.phase === "concept-running" ? "Marketing Director werkt aan het plan..."
           : post.phase === "concept-awaiting" ? "Concept klaar - wacht op je akkoord"
@@ -1799,6 +1964,191 @@ function Nova({ token, onLogout }) {
           </div>
         );
       })()}
+
+      {openAgentDetail && (() => {
+        const post = posts.find((p) => p.id === openAgentDetail.postId);
+        if (!post) return null;
+        const agent = post.agents.find((a) => a.role === openAgentDetail.role);
+        if (!agent) return null;
+        const isMarketing = agent.role === "marketing";
+        const isContent = agent.role === "content";
+        const isVisual = agent.role === "visual";
+        const isVideo = agent.role === "video";
+        const title = isMarketing ? "Marketing Director" : isContent ? "Content Creator" : isVisual ? "Visual Director" : "Video Director";
+        const subtitle = isMarketing ? "het complete verhaal en strategisch plan" : isContent ? "de tekst, caption en hashtags" : isVisual ? "de beeldconcepten en prompts" : "de shotlist en voice-over";
+        const icon = isMarketing ? "📣" : isContent ? "✍️" : isVisual ? "🎨" : "🎥";
+        const color = isMarketing ? "#B3ADEE" : isContent ? CYAN : isVisual ? AMBER : "#5DCAA5";
+        const content = isMarketing ? post.strategie : isContent ? post.copy : isVisual ? post.visual : post.regie;
+        const canRevise = !isMarketing && agent.state === "done" && (post.phase === "production-awaiting" || post.phase === "production-running");
+        return (
+          <div onClick={() => setOpenAgentDetail(null)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 27, padding: 20 }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "min(580px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${color}55`, borderRadius: 16, overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${color}33` }}>
+                <span style={{ fontSize: 22 }}>{icon}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>{title}</div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>{subtitle} · {post.topic}</div>
+                </div>
+                <button onClick={() => setOpenAgentDetail(null)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px", minWidth: 32, minHeight: 32 }}>×</button>
+              </div>
+
+              <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+                {agent.state === "running" ? (
+                  <div style={{ textAlign: "center", padding: 24 }}>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 12 }}>
+                      {[0, 1, 2].map((d) => (<span key={d} style={{ width: 8, height: 8, borderRadius: "50%", background: color, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}
+                    </div>
+                    <div style={{ fontSize: 13, color: "rgba(180,210,255,.75)" }}>{title} is aan het werk...</div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{content || "(nog geen inhoud)"}</div>
+                    {isVisual && post.imagePrompts && post.imagePrompts.length > 0 && (
+                      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+                        {post.imagePrompts.map((p, i) => {
+                          const img = (post.images || [])[i];
+                          return (
+                            <div key={i} style={{ aspectRatio: post.channel === "tiktok" || post.channel === "instagram" ? "2/3" : "1/1", borderRadius: 10, background: "rgba(0,0,0,.3)", border: `1px solid ${AMBER}55`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", position: "relative", cursor: img?.image ? "default" : "pointer" }} onClick={() => { if (!img?.image && (!img || img.state !== "generating")) generateImage(post.id, i); }}>
+                              {img?.image && (<img src={img.image} alt="Visual" style={{ width: "100%", height: "100%", objectFit: "cover" }} />)}
+                              {img?.state === "generating" && (<div style={{ textAlign: "center" }}><div style={{ display: "flex", justifyContent: "center", gap: 4, marginBottom: 6 }}>{[0, 1, 2].map((d) => (<span key={d} style={{ width: 5, height: 5, borderRadius: "50%", background: AMBER, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}</div><div style={{ fontSize: 10, color: AMBER }}>Genereren...</div></div>)}
+                              {img?.state === "error" && (<div style={{ fontSize: 10, color: "#FF8FA3", padding: 10, textAlign: "center" }}>{img.error}</div>)}
+                              {!img && (<div style={{ textAlign: "center", padding: 12 }}><div style={{ fontSize: 22, marginBottom: 4 }}>✨</div><div style={{ fontSize: 10, color: AMBER, fontWeight: 600 }}>Klik om te genereren</div><div style={{ fontSize: 9, color: "rgba(180,210,255,.5)", marginTop: 2 }}>~10 cent</div></div>)}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {canRevise && (
+                  <div style={{ marginTop: 18, padding: "12px 14px", background: "rgba(239,159,39,.06)", border: "1px solid rgba(239,159,39,.25)", borderRadius: 10 }}>
+                    <div style={{ fontSize: 11, color: AMBER, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8 }}>Wijziging voorstellen</div>
+                    <div style={{ fontSize: 11, color: "rgba(220,238,255,.75)", marginBottom: 8, lineHeight: 1.5 }}>Beschrijf wat je anders wilt. Marketing kijkt of de andere specialisten ook aangepast moeten worden en geeft het door.</div>
+                    <textarea
+                      value={agentFeedbackDraft[agent.role] || ""}
+                      onChange={(e) => setAgentFeedbackDraft((d) => ({ ...d, [agent.role]: e.target.value }))}
+                      placeholder={isContent ? "bijv. 'maak de toon enthousiaster' of 'hashtags korter'" : isVisual ? "bijv. 'meer rook in het beeld' of 'donkerder licht'" : "bijv. 'minder shots, meer focus op de machine'"}
+                      rows={3}
+                      style={{ width: "100%", background: "rgba(4,18,43,.6)", border: `1px solid ${AMBER}44`, borderRadius: 8, padding: "10px 12px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+                    />
+                    <button
+                      onClick={() => {
+                        const fb = (agentFeedbackDraft[agent.role] || "").trim();
+                        if (!fb) return;
+                        reviseAgent(post.id, agent.role, fb);
+                        setAgentFeedbackDraft((d) => ({ ...d, [agent.role]: "" }));
+                        setOpenAgentDetail(null);
+                      }}
+                      style={{ marginTop: 8, border: "none", borderRadius: 8, padding: "8px 14px", background: `linear-gradient(135deg, ${AMBER}, #C97A1A)`, color: "#04122B", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                    >
+                      Stuur naar Marketing →
+                    </button>
+                  </div>
+                )}
+
+                {post.marketingNote && (
+                  <div style={{ marginTop: 12, padding: "10px 12px", background: "rgba(127,119,221,.07)", border: "1px solid rgba(127,119,221,.25)", borderRadius: 8 }}>
+                    <div style={{ fontSize: 10, color: "#B3ADEE", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 4 }}>📣 Notitie van Marketing</div>
+                    <div style={{ fontSize: 12, color: "#E8F1FF", lineHeight: 1.5 }}>{post.marketingNote}</div>
+                  </div>
+                )}
+              </div>
+
+              {post.phase === "production-awaiting" && !isMarketing && (
+                <div style={{ padding: "10px 16px", borderTop: `1px solid ${color}22`, fontSize: 11, color: "rgba(180,210,255,.6)" }}>
+                  Open de andere agents om hun werk te bekijken, of keur alles goed via de Marketing-kaart.
+                </div>
+              )}
+              {post.phase === "production-awaiting" && isMarketing && (
+                <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: `1px solid ${color}22` }}>
+                  <button onClick={() => speakFullContent(post.id)} title="Voorlezen" style={{ background: "transparent", border: "1px solid rgba(56,230,255,.4)", color: CYAN, borderRadius: 10, padding: "9px 12px", fontSize: 12, cursor: "pointer" }}>🔊</button>
+                  <div style={{ flex: 1 }} />
+                  <button onClick={() => { setPosts((prev) => prev.filter((p) => p.id !== post.id)); setOpenAgentDetail(null); }} style={{ border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "9px 14px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Verwijder</button>
+                  <button onClick={() => { approveContentPost(post.id); setOpenAgentDetail(null); }} style={{ border: "none", borderRadius: 10, padding: "9px 18px", background: "linear-gradient(135deg, #1D9E75, #0F6E56)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Goedkeuren → kalender</button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {showBoeksy && boeksy && (
+        <div onClick={() => setShowBoeksy(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 26, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(720px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: "1px solid rgba(29,158,117,.3)", borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: "1px solid rgba(29,158,117,.2)" }}>
+              <span style={{ fontSize: 22 }}>💼</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Boekhouding (Boeksy)</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Live alleen-lezen koppeling · klanten, facturen, offertes, W&amp;V</div>
+              </div>
+              <button onClick={() => setShowBoeksy(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px", minWidth: 32, minHeight: 32 }}>×</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+              {boeksy.relations && boeksy.relations.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#5DCAA5", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>👥 Klanten en leveranciers ({boeksy.relations.length})</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6 }}>
+                    {boeksy.relations.slice(0, 30).map((r) => (
+                      <div key={r.id} style={{ padding: "8px 10px", background: "rgba(29,158,117,.06)", border: "1px solid rgba(29,158,117,.18)", borderRadius: 8, fontSize: 12 }}>
+                        <div style={{ color: "#E8F1FF", fontWeight: 600 }}>{r.name}</div>
+                        <div style={{ color: "rgba(180,210,255,.55)", fontSize: 10 }}>{r.type}{r.email ? ` · ${r.email}` : ""}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {boeksy.invoices && boeksy.invoices.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: CYAN, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>🧾 Recente facturen</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {boeksy.invoices.slice(0, 15).map((i) => (
+                      <div key={i.id} style={{ padding: "8px 12px", background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.15)", borderRadius: 8, fontSize: 12, display: "flex", gap: 10, alignItems: "center" }}>
+                        <span style={{ color: CYAN, fontWeight: 600, minWidth: 70 }}>{i.number || "concept"}</span>
+                        <span style={{ flex: 1, color: "#E8F1FF" }}>{i.relation || ""}{i.subject ? ` · ${i.subject}` : ""}</span>
+                        <span style={{ color: "rgba(180,210,255,.7)" }}>{i.total ? `€ ${i.total}` : ""}</span>
+                        <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>{i.status || ""}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {boeksy.quotes && boeksy.quotes.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#B3ADEE", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📋 Recente offertes</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {boeksy.quotes.slice(0, 15).map((q) => (
+                      <div key={q.id} style={{ padding: "8px 12px", background: "rgba(127,119,221,.05)", border: "1px solid rgba(127,119,221,.18)", borderRadius: 8, fontSize: 12, display: "flex", gap: 10, alignItems: "center" }}>
+                        <span style={{ color: "#B3ADEE", fontWeight: 600, minWidth: 70 }}>{q.number || "concept"}</span>
+                        <span style={{ flex: 1, color: "#E8F1FF" }}>{q.relation || ""}{q.subject ? ` · ${q.subject}` : ""}</span>
+                        <span style={{ color: "rgba(180,210,255,.7)" }}>{q.total ? `€ ${q.total}` : ""}</span>
+                        <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>{q.status || ""}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {boeksy.profitLoss && (
+                <div>
+                  <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📊 Winst en verlies (lopend kwartaal)</div>
+                  <pre style={{ fontSize: 11, color: "rgba(220,238,255,.85)", padding: "10px 12px", background: "rgba(239,159,39,.05)", border: "1px solid rgba(239,159,39,.18)", borderRadius: 8, overflow: "auto", margin: 0, whiteSpace: "pre-wrap" }}>{JSON.stringify(boeksy.profitLoss, null, 2)}</pre>
+                </div>
+              )}
+
+              {boeksy.relationsError && <div style={{ fontSize: 11, color: "#FF8FA3" }}>Fout bij ophalen klanten: {boeksy.relationsError}</div>}
+              {boeksy.invoicesError && <div style={{ fontSize: 11, color: "#FF8FA3" }}>Fout bij ophalen facturen: {boeksy.invoicesError}</div>}
+              {boeksy.quotesError && <div style={{ fontSize: 11, color: "#FF8FA3" }}>Fout bij ophalen offertes: {boeksy.quotesError}</div>}
+              {boeksy.profitLossError && <div style={{ fontSize: 11, color: "#FF8FA3" }}>Fout bij ophalen W&amp;V: {boeksy.profitLossError}</div>}
+            </div>
+            <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(29,158,117,.15)", fontSize: 11, color: "rgba(180,210,255,.6)" }}>
+              NOVA kan over deze gegevens praten. Aanmaken van facturen of offertes is nog niet geactiveerd; dat volgt in een volgende stap met goedkeuring.
+            </div>
+          </div>
+        </div>
+      )}
 
       {showImap && (
         <ImapForm

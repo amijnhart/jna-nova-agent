@@ -52,7 +52,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { messages, mode, integrations, voiceRate, emails } = req.body;
+    const { messages, mode, integrations, voiceRate, emails, boeksy } = req.body;
     if (!Array.isArray(messages)) {
       return res.status(400).json({ error: "messages ontbreekt" });
     }
@@ -85,6 +85,26 @@ export default async function handler(req, res) {
         return `${i + 1}. Van: ${m.from || "onbekend"} | Onderwerp: ${m.subject || "(geen)"} | ${datum} | ${tags}\n   Voorbeschouwing: ${m.snippet || "(leeg)"}`;
       }).join("\n");
       system += `\n\nDe inbox van JnA Events is LIVE GEKOPPELD en de volgende ${emails.length} recente e-mails zijn beschikbaar als jouw werkelijkheid. Gebruik DEZE lijst bij vragen over e-mail, niet je eigen aannames. Wanneer de gebruiker vraagt om een mail voor te lezen, lees het onderwerp uit, vermeld de afzender, en lees vervolgens de voorbeschouwing. Wees natuurlijk in je spraak en kort. Als de gebruiker vraagt om een samenvatting, vat de inbox samen in 2-3 zinnen met de belangrijkste afzenders en onderwerpen. Beweer NOOIT dat de koppeling niet actief is - die is wel actief, dit is de bewijslast:\n${lijst}`;
+    }
+
+    // Boeksy boekhouding als context: klanten, facturen, offertes, W&V.
+    // NOVA mag hierover praten alsof zij toegang heeft, want die heeft ze (read-only).
+    if (boeksy && typeof boeksy === "object") {
+      let blok = "\n\nDe Boeksy-boekhouding van JnA Events is LIVE GEKOPPELD (alleen-lezen). Bij vragen over klanten, omzet, facturen, offertes, gebruik DEZE gegevens als waarheid. Wees concreet met namen en bedragen. Beweer NOOIT dat de koppeling niet actief is.";
+      if (Array.isArray(boeksy.relations) && boeksy.relations.length) {
+        blok += `\n\nKlanten en leveranciers (${boeksy.relations.length}):\n` + boeksy.relations.slice(0, 30).map((r) => `- ${r.name}${r.type ? ` (${r.type})` : ""}${r.email ? ` · ${r.email}` : ""}`).join("\n");
+      }
+      if (Array.isArray(boeksy.invoices) && boeksy.invoices.length) {
+        blok += `\n\nRecente facturen (${boeksy.invoices.length}):\n` + boeksy.invoices.slice(0, 15).map((i) => `- ${i.number || "concept"} | ${i.date || ""} | ${i.klant || ""} | ${i.subject || ""} | ${i.total ? `€${i.total}` : ""} | ${i.status || ""}`).join("\n");
+      }
+      if (Array.isArray(boeksy.quotes) && boeksy.quotes.length) {
+        blok += `\n\nRecente offertes (${boeksy.quotes.length}):\n` + boeksy.quotes.slice(0, 15).map((q) => `- ${q.number || "concept"} | ${q.date || ""} | ${q.klant || ""} | ${q.subject || ""} | ${q.total ? `€${q.total}` : ""} | ${q.status || ""}`).join("\n");
+      }
+      if (boeksy.profitLoss) {
+        blok += `\n\nWinst- en verliesrekening lopend kwartaal (samengevat): ${JSON.stringify(boeksy.profitLoss).slice(0, 600)}`;
+      }
+      blok += "\n\nBELANGRIJK: het AANMAKEN van facturen of offertes is nog niet geactiveerd. Als de gebruiker daarom vraagt, leg uit dat je het kunt opstellen als concept maar dat de schrijf-actie nog niet geactiveerd is en dat we die in een volgende stap toevoegen.";
+      system += blok;
     }
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
