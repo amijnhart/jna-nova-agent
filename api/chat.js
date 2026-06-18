@@ -103,6 +103,18 @@ export default async function handler(req, res) {
       if (boeksy.profitLoss) {
         blok += `\n\nWinst- en verliesrekening lopend kwartaal (samengevat): ${JSON.stringify(boeksy.profitLoss).slice(0, 600)}`;
       }
+      if (Array.isArray(boeksy.events) && boeksy.events.length) {
+        blok += `\n\nKomende events uit Boeksy (offertes/facturen met event_date) - dit zijn dagen waar JnA Events op locatie werkt en content kan maken:\n` + boeksy.events.slice(0, 15).map((e) => {
+          const d = new Date(e.date);
+          const dStr = isNaN(d.getTime()) ? e.date : d.toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+          return `- ${dStr} | ${e.klant || "?"} | ${e.subject || ""} | status: ${e.status || "?"}`;
+        }).join("\n");
+        blok += `\n\nWanneer de gebruiker over een aankomende gig vraagt of jij wilt voorstellen wat te doen op een datum, gebruik deze events. Stel proactief content-acties voor: 4 dagen ervoor een aankondiging, 2 dagen ervoor een teaser, op de dag zelf on-site footage maken, 2 dagen erna een recap.`;
+      }
+      if (Array.isArray(boeksy.followUps) && boeksy.followUps.length) {
+        blok += `\n\nOffertes die mogelijk follow-up nodig hebben (open, ouder dan 14 dagen):\n` + boeksy.followUps.slice(0, 10).map((f) => `- offerte ${f.number || "concept"} aan ${f.klant} voor ${f.subject} - ${f.daysOpen} dagen oud${f.total ? ", € " + f.total : ""}`).join("\n");
+        blok += `\n\nALs de gebruiker hierover vraagt, signaleer welke offertes het oudst zijn. Stel NIET voor om automatisch te mailen - Boeksy heeft daar een eigen functie voor. Als hij vraagt om een follow-up tekst, help dan met een conceptmail die hij zelf kan versturen via Boeksy of zijn mailprogramma.`;
+      }
       blok += "\n\nBELANGRIJK: het AANMAKEN van facturen of offertes is nog niet geactiveerd. Als de gebruiker daarom vraagt, leg uit dat je het kunt opstellen als concept maar dat de schrijf-actie nog niet geactiveerd is en dat we die in een volgende stap toevoegen.";
       system += blok;
     }
