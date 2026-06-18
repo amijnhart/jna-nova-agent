@@ -379,6 +379,13 @@ function Nova({ token, onLogout }) {
   const [agentFeedbackDraft, setAgentFeedbackDraft] = useState({}); // role -> tekst
   const [status, setStatus] = useState("Online · klaar voor je opdracht");
   const [micSupported, setMicSupported] = useState(true);
+  // Altijd-luister modus: microfoon staat continu open, VAD activeert herkenning
+  // wanneer stem boven drempel uit komt. localStorage onthoudt voorkeur.
+  const [alwaysListen, setAlwaysListen] = useState(() => {
+    try { return localStorage.getItem("nova_always_listen") === "1"; } catch { return false; }
+  });
+  const [micMuted, setMicMuted] = useState(false); // tijdelijk dempen tijdens always-listen
+  const [micLevel, setMicLevel] = useState(0); // huidig volumeniveau 0-1, voor visuele feedback
   const [actions, setActions] = useState([]);
   const [idleStars, setIdleStars] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -406,6 +413,12 @@ function Nova({ token, onLogout }) {
 
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
+  // VAD refs - Web Audio objecten leven hier zodat ze tussen renders bestaan
+  const audioCtxRef = useRef(null);
+  const micStreamRef = useRef(null);
+  const analyserRef = useRef(null);
+  const vadRafRef = useRef(null);
+  const vadStateRef = useRef({ voiceCount: 0, silenceCount: 0, currentlyRecognizing: false });
   const voicesRef = useRef([]);
   const tasksRef = useRef([]);
   const integrationsRef = useRef({});
@@ -1011,12 +1024,134 @@ function Nova({ token, onLogout }) {
     if (!SR) { setMicSupported(false); return; }
     const rec = new SR();
     rec.lang = "nl-NL"; rec.continuous = false; rec.interimResults = false;
-    rec.onresult = (e) => { const text = e.results[0][0].transcript; setInput(text); setListening(false); setTimeout(() => sendMessage(text), 250); };
-    rec.onerror = () => { setListening(false); setStatus("Microfoon niet beschikbaar — typ je bericht"); };
-    rec.onend = () => setListening(false);
+    rec.onresult = (e) => {
+      const text = e.results[0][0].transcript;
+      vadStateRef.current.currentlyRecognizing = false;
+      setInput(text);
+      setListening(false);
+      setTimeout(() => sendMessage(text), 250);
+    };
+    rec.onerror = () => {
+      vadStateRef.current.currentlyRecognizing = false;
+      setListening(false);
+    };
+    rec.onend = () => {
+      vadStateRef.current.currentlyRecognizing = false;
+      setListening(false);
+    };
     recognitionRef.current = rec;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // VAD (Voice Activity Detection) start de microfoon in continue modus.
+  // We meten RMS-volume; als het boven de drempel komt EN NOVA niet zelf
+  // aan het praten is EN we niet net herkennen, starten we spraakherkenning.
+  async function startAlwaysListen() {
+    if (!recognitionRef.current) { setStatus("Spraak niet ondersteund in deze browser"); return false; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,    // belangrijk: voorkomt dat NOVA's eigen stem haar triggert
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+      micStreamRef.current = stream;
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.6;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const buf = new Uint8Array(analyser.fftSize);
+      const VOICE_THRESHOLD = 0.045; // genormaliseerde RMS waarboven het stem lijkt
+      const VOICE_FRAMES_TO_TRIGGER = 3; // ~150ms aanhoudend boven drempel
+      const SILENCE_FRAMES_TO_RESET = 30; // ~1.5s stilte na uiting
+
+      const tick = () => {
+        if (!analyserRef.current) return;
+        analyser.getByteTimeDomainData(buf);
+        // RMS berekenen, genormaliseerd op 0-1
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        setMicLevel(rms);
+
+        const st = vadStateRef.current;
+        // Niet luisteren als gedempt, NOVA praat, of we al bezig zijn
+        if (!micMuted && !speaking && !st.currentlyRecognizing) {
+          if (rms > VOICE_THRESHOLD) {
+            st.voiceCount++;
+            st.silenceCount = 0;
+            if (st.voiceCount >= VOICE_FRAMES_TO_TRIGGER) {
+              // Trigger spraakherkenning
+              st.currentlyRecognizing = true;
+              st.voiceCount = 0;
+              setListening(true);
+              setStatus("Luisteren...");
+              try { recognitionRef.current.start(); }
+              catch { st.currentlyRecognizing = false; setListening(false); }
+            }
+          } else {
+            st.silenceCount++;
+            if (st.silenceCount > SILENCE_FRAMES_TO_RESET) st.voiceCount = 0;
+          }
+        }
+        vadRafRef.current = requestAnimationFrame(tick);
+      };
+      vadRafRef.current = requestAnimationFrame(tick);
+      setStatus("Microfoon staat aan, ik luister naar je stem");
+      return true;
+    } catch (err) {
+      console.error("VAD start mislukt:", err);
+      setStatus("Geef toegang tot je microfoon en probeer opnieuw");
+      return false;
+    }
+  }
+
+  function stopAlwaysListen() {
+    if (vadRafRef.current) { cancelAnimationFrame(vadRafRef.current); vadRafRef.current = null; }
+    if (recognitionRef.current && vadStateRef.current.currentlyRecognizing) {
+      try { recognitionRef.current.stop(); } catch { /* doorgaan */ }
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      try { audioCtxRef.current.close(); } catch { /* doorgaan */ }
+      audioCtxRef.current = null;
+    }
+    analyserRef.current = null;
+    vadStateRef.current = { voiceCount: 0, silenceCount: 0, currentlyRecognizing: false };
+    setMicLevel(0);
+    setListening(false);
+  }
+
+  async function toggleAlwaysListen() {
+    if (alwaysListen) {
+      stopAlwaysListen();
+      setAlwaysListen(false);
+      try { localStorage.setItem("nova_always_listen", "0"); } catch { /* doorgaan */ }
+      setStatus("Klaar voor je opdracht");
+    } else {
+      const ok = await startAlwaysListen();
+      if (ok) {
+        setAlwaysListen(true);
+        try { localStorage.setItem("nova_always_listen", "1"); } catch { /* doorgaan */ }
+      }
+    }
+  }
+
+  // Cleanup bij component unmount
+  useEffect(() => () => stopAlwaysListen(), []);
 
   function pickVoice() {
     const voices = voicesRef.current.length ? voicesRef.current : window.speechSynthesis?.getVoices() || [];
@@ -1088,8 +1223,29 @@ function Nova({ token, onLogout }) {
 
   async function toggleMic() {
     if (!micSupported) { setStatus("Spraak werkt in Chrome of Edge — typ je bericht"); return; }
+    // In altijd-luister modus is deze knop een dempen-knop
+    if (alwaysListen) {
+      setMicMuted((m) => {
+        const next = !m;
+        setStatus(next ? "Gedempt - klik nogmaals om mij weer te laten luisteren" : "Microfoon staat aan, ik luister naar je stem");
+        return next;
+      });
+      return;
+    }
+    // Klassieke push-to-talk modus
     if (listening) { recognitionRef.current?.stop(); setListening(false); return; }
-    try { await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { setStatus("Geef toegang tot je microfoon en probeer opnieuw"); return; }
+    // Op mobiel moet getUserMedia ABSOLUUT vanuit een directe gebruikersinteractie
+    // worden aangeroepen, anders blokkeert iOS Safari het permanent. Daarom geen
+    // andere async work hiervoor.
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop de stream direct - we hebben hem alleen voor de permissie nodig.
+      // Web Speech API regelt haar eigen audio.
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (err) {
+      setStatus("Geef toegang tot je microfoon in je browserinstellingen");
+      return;
+    }
     stopSpeaking(); setListening(true); setStatus("Luisteren...");
     try { recognitionRef.current.start(); } catch { setListening(false); }
   }
@@ -1369,6 +1525,29 @@ function Nova({ token, onLogout }) {
                 <button onClick={() => { updateVoiceRate(1.05); testVoice(1.05); }} style={{ background: "transparent", border: "1px solid rgba(56,230,255,.3)", color: "rgba(180,210,255,.7)", borderRadius: 6, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>standaard</button>
               </div>
               <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 8, lineHeight: 1.4 }}>Versleep en laat los om te testen. Je voorkeur wordt onthouden.</div>
+
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(56,230,255,.12)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: "rgba(220,238,255,.85)" }}>Microfoon altijd aan</span>
+                  <button
+                    onClick={toggleAlwaysListen}
+                    disabled={!micSupported}
+                    style={{
+                      border: "none", borderRadius: 6, padding: "4px 10px",
+                      background: alwaysListen ? "rgba(29,158,117,.2)" : "rgba(127,119,221,.15)",
+                      color: alwaysListen ? "#5DCAA5" : "#B3ADEE",
+                      fontSize: 11, fontWeight: 600,
+                      cursor: micSupported ? "pointer" : "not-allowed",
+                      opacity: micSupported ? 1 : 0.5,
+                    }}
+                  >{alwaysListen ? "🎙 aan" : "🎙 uit"}</button>
+                </div>
+                <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", lineHeight: 1.4 }}>
+                  {alwaysListen
+                    ? "Ik luister continu. Gebruik de mic-knop bij de chat om te dempen."
+                    : "Microfoon staat altijd aan, ik reageer alleen op stem. Tik de knop om aan te zetten."}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -1544,7 +1723,21 @@ function Nova({ token, onLogout }) {
             {busy && (<div style={{ alignSelf: "flex-start", padding: "12px 16px", borderRadius: "14px 14px 14px 4px", background: "rgba(56,230,255,.08)", border: "1px solid rgba(56,230,255,.2)", display: "flex", gap: 5 }}>{[0, 1, 2].map((d) => (<span key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: CYAN, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}</div>)}
           </div>
           <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.1)", alignItems: "center" }}>
-            <button onClick={toggleMic} aria-label="Spraak" style={{ width: 40, height: 40, borderRadius: "50%", border: `1px solid ${listening ? "#FF6B8A" : "rgba(56,230,255,.4)"}`, background: listening ? "rgba(255,107,138,.15)" : "rgba(56,230,255,.08)", color: listening ? "#FF6B8A" : CYAN, cursor: "pointer", fontSize: 17, flexShrink: 0 }}>{listening ? "■" : "🎙"}</button>
+            <button
+              onClick={toggleMic}
+              aria-label={alwaysListen ? (micMuted ? "Microfoon dempen opheffen" : "Microfoon dempen") : "Spraak"}
+              title={alwaysListen ? (micMuted ? "Gedempt - klik om te luisteren" : "Luistert continu - klik om te dempen") : "Klik om te spreken"}
+              style={{
+                width: 40, height: 40, borderRadius: "50%",
+                border: `1px solid ${alwaysListen ? (micMuted ? "rgba(255,107,138,.6)" : "#5DCAA5") : (listening ? "#FF6B8A" : "rgba(56,230,255,.4)")}`,
+                background: alwaysListen
+                  ? (micMuted ? "rgba(255,107,138,.15)" : `rgba(29,158,117,${0.10 + Math.min(micLevel * 4, 0.35)})`)
+                  : (listening ? "rgba(255,107,138,.15)" : "rgba(56,230,255,.08)"),
+                color: alwaysListen ? (micMuted ? "#FF6B8A" : "#5DCAA5") : (listening ? "#FF6B8A" : CYAN),
+                cursor: "pointer", fontSize: 17, flexShrink: 0,
+                transition: "background .15s ease",
+              }}
+            >{alwaysListen ? (micMuted ? "🔇" : "🎙") : (listening ? "■" : "🎙")}</button>
             <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMessage()} placeholder="Praat met NOVA of typ een opdracht..." style={{ flex: 1, background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 22, padding: "10px 15px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
             <button onClick={() => sendMessage()} disabled={busy} aria-label="Versturen" style={{ width: 40, height: 40, borderRadius: "50%", border: "none", background: `linear-gradient(135deg, ${CYAN}, ${PURPLE})`, color: "#04122B", cursor: busy ? "not-allowed" : "pointer", fontSize: 17, flexShrink: 0, opacity: busy ? 0.5 : 1, fontWeight: 700 }}>↑</button>
           </div>
