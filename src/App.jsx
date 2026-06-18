@@ -477,6 +477,15 @@ function Nova({ token, onLogout }) {
     try { const v = parseFloat(localStorage.getItem("nova_voice_rate")); return isFinite(v) && v >= 0.5 && v <= 2.0 ? v : 1.05; }
     catch { return 1.05; }
   });
+  // Door gebruiker gekozen stem (op naam) - leeg betekent automatische keuze
+  const [voiceName, setVoiceName] = useState(() => {
+    try { return localStorage.getItem("nova_voice_name") || ""; } catch { return ""; }
+  });
+  const [availableVoices, setAvailableVoices] = useState([]);
+  // Externe TTS voorkeur (browser/openai)
+  const [ttsProvider, setTtsProvider] = useState(() => {
+    try { return localStorage.getItem("nova_tts_provider") || "browser"; } catch { return "browser"; }
+  });
   const [showVoicePanel, setShowVoicePanel] = useState(false);
   const [imapCfg, setImapCfg] = useState(null); // {configured, host, port, user, passSet}
   const [showImap, setShowImap] = useState(false);
@@ -509,6 +518,9 @@ function Nova({ token, onLogout }) {
   const [showCatalog, setShowCatalog] = useState(false);
   const [calendar, setCalendar] = useState([]);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [calForm, setCalForm] = useState({ open: false, title: "", when: "", channel: "instagram", body: "" });
+  const [toast, setToast] = useState(null); // {icon, text, color}
+  const [improveJustAdded, setImproveJustAdded] = useState(false); // voor pulse-effect op ✨-icoon
   const [onboarding, setOnboarding] = useState([]);
   const [showOnboard, setShowOnboard] = useState(false);
   const [openOnboard, setOpenOnboard] = useState(null);
@@ -519,6 +531,7 @@ function Nova({ token, onLogout }) {
   const [prodCat, setProdCat] = useState("");
   const catalogRef = useRef([]);
   const greetedRef = useRef(false);
+  const suggestedAlwaysListenRef = useRef(false);
 
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -582,59 +595,46 @@ function Nova({ token, onLogout }) {
       if (greetedRef.current) return;
       greetedRef.current = true;
 
+      // Helper die een fetch doet en altijd een waarde teruggeeft (geen exceptions).
+      const safeFetch = async (url) => {
+        try {
+          const r = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+          return await r.json();
+        } catch { return null; }
+      };
+
+      // Alle data parallel ophalen. Scheelt 2-3 seconden bij login op trage verbindingen.
+      const [d1, d2, d3, d4, d5, d6, dB, dWA] = await Promise.all([
+        safeFetch(IMPROVE_URL),
+        safeFetch(INBOX_URL),
+        safeFetch(CATALOG_URL),
+        safeFetch(CALENDAR_URL),
+        safeFetch(ONBOARDING_URL),
+        safeFetch("/api/mail?action=settings"),
+        safeFetch(BOEKSY_URL),
+        safeFetch("/api/whatsapp?action=inbox"),
+      ]);
+
       let imps = [];
       let inbox = { connected: false, emails: [] };
       let liveIntegrations = {};
-      try {
-        const r1 = await fetch(IMPROVE_URL, { headers: { Authorization: "Bearer " + token } });
-        const d1 = await r1.json();
-        if (Array.isArray(d1.items)) { imps = d1.items; setImprovements(d1.items); }
-      } catch (e) { void e; }
-      try {
-        const r2 = await fetch(INBOX_URL, { headers: { Authorization: "Bearer " + token } });
-        inbox = await r2.json();
-        if (inbox.connected && Array.isArray(inbox.emails)) setEmails(inbox.emails);
-      } catch (e) { void e; }
-      try {
-        const r3 = await fetch(CATALOG_URL, { headers: { Authorization: "Bearer " + token } });
-        const d3 = await r3.json();
-        if (Array.isArray(d3.items)) setCatalog(d3.items);
-      } catch (e) { void e; }
-      try {
-        const r4 = await fetch(CALENDAR_URL, { headers: { Authorization: "Bearer " + token } });
-        const d4 = await r4.json();
-        if (Array.isArray(d4.items)) setCalendar(d4.items);
-      } catch (e) { void e; }
-      try {
-        const r5 = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
-        const d5 = await r5.json();
+      let waInbox = [];
+
+      if (d1 && Array.isArray(d1.items)) { imps = d1.items; setImprovements(d1.items); }
+      if (d2) { inbox = d2; if (inbox.connected && Array.isArray(inbox.emails)) setEmails(inbox.emails); }
+      if (d3 && Array.isArray(d3.items)) setCatalog(d3.items);
+      if (d4 && Array.isArray(d4.items)) setCalendar(d4.items);
+      if (d5) {
         if (Array.isArray(d5.items)) setOnboarding(d5.items);
         if (d5.integrations) { setIntegrations(d5.integrations); liveIntegrations = d5.integrations; }
-      } catch (e) { void e; }
-      try {
-        const r6 = await fetch("/api/mail?action=settings", { headers: { Authorization: "Bearer " + token } });
-        const d6 = await r6.json();
-        setImapCfg(d6);
-      } catch (e) { void e; }
-      try {
-        const rB = await fetch(BOEKSY_URL, { headers: { Authorization: "Bearer " + token } });
-        const dB = await rB.json();
-        // Verrijk de data met afgeleide events en follow-up signalen
+      }
+      if (d6) setImapCfg(d6);
+      if (dB) {
         dB.events = deriveBoeksyEvents(dB);
         dB.followUps = deriveFollowUpQuotes(dB);
         setBoeksy(dB);
-      } catch (e) { void e; }
-      try {
-        const r7 = await fetch(ONBOARDING_URL, { headers: { Authorization: "Bearer " + token } });
-        const d7 = await r7.json();
-        if (d7.integrations) setIntegrations(d7.integrations);
-      } catch (e) { void e; }
-      let waInbox = [];
-      try {
-        const r6 = await fetch("/api/whatsapp?action=inbox", { headers: { Authorization: "Bearer " + token } });
-        const d6 = await r6.json();
-        if (Array.isArray(d6.items)) waInbox = d6.items;
-      } catch (e) { void e; }
+      }
+      if (dWA && Array.isArray(dWA.items)) waInbox = dWA.items;
 
       const hour = new Date().getHours();
       const groet = hour < 12 ? "Goedemorgen" : hour < 18 ? "Goedemiddag" : "Goedenavond";
@@ -697,6 +697,11 @@ function Nova({ token, onLogout }) {
       });
       const d = await res.json();
       if (Array.isArray(d.items)) setImprovements(d.items);
+      // Visuele bevestiging: toast verschijnt en het ✨-icoon pulseert kort
+      setToast({ icon: "✨", text: "Verbeterpunt opgeslagen", color: AMBER });
+      setTimeout(() => setToast(null), 2800);
+      setImproveJustAdded(true);
+      setTimeout(() => setImproveJustAdded(false), 1500);
     } catch (e) { void e; }
   }
 
@@ -1126,7 +1131,20 @@ function Nova({ token, onLogout }) {
   }, []);
 
   useEffect(() => {
-    function load() { voicesRef.current = window.speechSynthesis?.getVoices() || []; }
+    function load() {
+      const voices = window.speechSynthesis?.getVoices() || [];
+      voicesRef.current = voices;
+      // Filter op Nederlands en sorteer op kwaliteit
+      const nl = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("nl"));
+      const scored = nl.map((v) => {
+        let score = 0;
+        if (/natural|neural|wavenet/i.test(v.name)) score += 100;
+        if (/online|premium|enhanced/i.test(v.name)) score += 50;
+        if (/google|microsoft/i.test(v.name)) score += 30;
+        return { ...v, name: v.name, lang: v.lang, score };
+      }).sort((a, b) => b.score - a.score);
+      setAvailableVoices(scored.map((v) => ({ name: v.name, lang: v.lang })));
+    }
     load();
     if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = load;
   }, []);
@@ -1141,6 +1159,15 @@ function Nova({ token, onLogout }) {
       vadStateRef.current.currentlyRecognizing = false;
       setInput(text);
       setListening(false);
+      // Bied always-listen aan na eerste push-to-talk uiting in deze sessie,
+      // maar alleen als het nog niet aan staat en de gebruiker echt de mic gebruikt.
+      if (!alwaysListen && !suggestedAlwaysListenRef.current) {
+        suggestedAlwaysListenRef.current = true;
+        setTimeout(() => {
+          const tip = "Wist je dat ik continu kan luisteren? Klik in het stem-paneel (🔊 rechtsboven) op 'Microfoon altijd aan', dan kun je vrij praten zonder telkens de mic-knop te drukken.";
+          setMessages((m) => [...m, { role: "assistant", content: tip }]);
+        }, 2000);
+      }
       setTimeout(() => sendMessage(text), 250);
     };
     rec.onerror = () => {
@@ -1269,9 +1296,12 @@ function Nova({ token, onLogout }) {
     const voices = voicesRef.current.length ? voicesRef.current : window.speechSynthesis?.getVoices() || [];
     const nl = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("nl"));
     if (!nl.length) return null;
-    // Voorkeur voor moderne neural-stemmen (klinken het meest menselijk).
-    // Edge/Chrome op Windows hebben "Microsoft Fenna Online (Natural)" - die is uitstekend.
-    // macOS/iOS heeft "Xander" of "Claire" (verbeterde stemmen).
+    // Eerst: door gebruiker handmatig gekozen stem
+    if (voiceName) {
+      const hit = nl.find((v) => v.name === voiceName);
+      if (hit) return hit;
+    }
+    // Anders: automatische keuze op kwaliteit-tiers
     const tiers = [
       /natural|neural|wavenet/i,
       /online|premium|enhanced/i,
@@ -1285,23 +1315,74 @@ function Nova({ token, onLogout }) {
     return nl[0];
   }
 
-  // Spreek een tekst uit, en deel hem op in zinnen zodat de browser tussen
-  // zinnen ademt - dat klinkt veel natuurlijker dan een lange monoloog.
+  // Audio-element voor OpenAI TTS afspelen. Eén element dat we steeds hergebruiken.
+  const ttsAudioRef = useRef(null);
+  useEffect(() => {
+    ttsAudioRef.current = new Audio();
+    ttsAudioRef.current.preload = "auto";
+  }, []);
+
+  // Spreek een tekst uit. Werkt via twee paden:
+  // 1. browser (default, gratis, kwaliteit varieert per apparaat)
+  // 2. openai (consistent over apparaten, kost ongeveer 1,5 cent per 1000 karakters)
   function speak(text) {
-    if (!voiceOn || !window.speechSynthesis) return;
+    if (!voiceOn) return;
     const clean = cleanForSpeech(text);
     if (!clean) return;
+
+    // OpenAI TTS pad
+    if (ttsProvider === "openai") {
+      // Stop lopende speech
+      if (ttsAudioRef.current) {
+        try { ttsAudioRef.current.pause(); ttsAudioRef.current.currentTime = 0; } catch { /* doorgaan */ }
+      }
+      window.speechSynthesis?.cancel();
+      setSpeaking(true);
+      fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ text: clean, voice: voiceName || "nova", model: "tts-1" }),
+      }).then(async (r) => {
+        if (!r.ok) {
+          // Val terug op browser stem
+          const err = await r.json().catch(() => ({}));
+          console.warn("TTS via OpenAI mislukt, val terug op browser:", err.error);
+          setSpeaking(false);
+          speakBrowser(clean);
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = ttsAudioRef.current;
+        audio.src = url;
+        audio.playbackRate = voiceRate;
+        audio.onended = () => { setSpeaking(false); URL.revokeObjectURL(url); };
+        audio.onerror = () => { setSpeaking(false); URL.revokeObjectURL(url); };
+        audio.play().catch(() => setSpeaking(false));
+      }).catch((e) => {
+        console.warn("TTS netwerkfout, val terug op browser:", e.message);
+        setSpeaking(false);
+        speakBrowser(clean);
+      });
+      return;
+    }
+
+    // Browser TTS pad
+    speakBrowser(clean);
+  }
+
+  // Browser-spraak met zin-pauzes voor natuurlijke ademhaling
+  function speakBrowser(clean) {
+    if (!window.speechSynthesis) return;
     window.speechSynthesis.cancel();
 
     const voice = pickVoice();
-    // Split op zin-einde, behoud het leesteken in elke chunk
     const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
-
     sentences.forEach((sentence, i) => {
       const u = new SpeechSynthesisUtterance(sentence.trim());
       u.lang = "nl-NL";
-      u.rate = voiceRate;   // instelbaar via de schuifregelaar bij het stem-icoon
-      u.pitch = 1.0;   // natuurlijke pitch (was 0.95, te laag)
+      u.rate = voiceRate;
+      u.pitch = 1.0;
       u.volume = 1.0;
       if (voice) u.voice = voice;
       if (i === 0) u.onstart = () => setSpeaking(true);
@@ -1312,13 +1393,29 @@ function Nova({ token, onLogout }) {
       window.speechSynthesis.speak(u);
     });
   }
-  function stopSpeaking() { window.speechSynthesis?.cancel(); setSpeaking(false); }
+  function stopSpeaking() {
+    window.speechSynthesis?.cancel();
+    if (ttsAudioRef.current) {
+      try { ttsAudioRef.current.pause(); ttsAudioRef.current.currentTime = 0; } catch { /* doorgaan */ }
+    }
+    setSpeaking(false);
+  }
   function toggleVoice() { if (voiceOn) stopSpeaking(); setVoiceOn((v) => !v); }
 
   // Pas spraaktempo aan en sla op zodat het bewaard blijft tussen sessies.
   function updateVoiceRate(rate) {
     setVoiceRate(rate);
     try { localStorage.setItem("nova_voice_rate", String(rate)); } catch (e) { void e; }
+  }
+
+  function updateVoiceName(name) {
+    setVoiceName(name);
+    try { localStorage.setItem("nova_voice_name", name || ""); } catch (e) { void e; }
+  }
+
+  function updateTtsProvider(p) {
+    setTtsProvider(p);
+    try { localStorage.setItem("nova_tts_provider", p); } catch (e) { void e; }
   }
 
   // Korte test-zin uitspreken zodat je het effect direct hoort.
@@ -1438,6 +1535,8 @@ function Nova({ token, onLogout }) {
     } catch (err) {
       setMessages((p) => [...p, { role: "assistant", content: "Er ging iets mis: " + (err.message || "onbekende fout") }]);
       setStatus("Verbindingsfout");
+      // Fout-status verdwijnt vanzelf na 5 seconden zodat de balk weer "klaar" toont
+      setTimeout(() => setStatus((s) => s === "Verbindingsfout" ? "Online · klaar voor je opdracht" : s), 5000);
     } finally { setBusy(false); }
   }
 
@@ -1573,6 +1672,9 @@ function Nova({ token, onLogout }) {
         @keyframes orbEnter{0%{transform:scale(.5) translateY(-12px);opacity:.4;filter:brightness(1.8)}60%{transform:scale(1.08) translateY(0);opacity:1;filter:brightness(1.3)}100%{transform:scale(1) translateY(0);opacity:1;filter:brightness(1)}}
         @keyframes orbBloom{0%{box-shadow:0 0 0 0 rgba(56,230,255,.6),inset 0 0 20px rgba(56,230,255,.25)}50%{box-shadow:0 0 80px 20px rgba(56,230,255,.4),inset 0 0 30px rgba(56,230,255,.4)}100%{box-shadow:0 0 30px rgba(56,230,255,.35),inset 0 0 20px rgba(56,230,255,.25)}}
         @keyframes dashMove{from{stroke-dashoffset:0}to{stroke-dashoffset:-20}}
+        @keyframes toastSlide{0%{opacity:0;transform:translateY(-12px)}10%{opacity:1;transform:translateY(0)}85%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(-8px)}}
+        @keyframes iconPulse{0%,100%{transform:scale(1);filter:brightness(1)}30%{transform:scale(1.35);filter:brightness(1.5)}60%{transform:scale(1.1);filter:brightness(1.2)}}
+        .icon-just-saved .panel-icon-circle{animation:iconPulse 1.5s ease-out;box-shadow:0 0 24px ${AMBER}}
         .ring{position:absolute;border-radius:50%;border:1px solid rgba(56,230,255,.25)}
         .idle-star{position:absolute;border-radius:50%;background:${CYAN};box-shadow:0 0 8px ${CYAN},0 0 16px rgba(56,230,255,.5);transform:translate(-50%,-50%);transition:left 3s ease-in-out,top 3s ease-in-out;pointer-events:none;animation:starFade linear infinite}
         .act-star{position:absolute;transform:translate(-50%,-50%);animation:actIn .45s cubic-bezier(.2,1.3,.5,1) both;cursor:pointer;z-index:5}
@@ -1583,6 +1685,8 @@ function Nova({ token, onLogout }) {
         .task-node{position:absolute;transform:translate(-50%,-50%);animation:taskIn .4s ease both;cursor:pointer;z-index:6;width:124px}
         .task-card{background:rgba(8,26,54,.92);border:1px solid rgba(56,230,255,.35);border-radius:12px;padding:8px 10px;transition:all .2s}
         .task-node:hover .task-card{border-color:${CYAN};transform:translateY(-2px)}
+        .task-node:hover .post-remove-btn{opacity:1}
+        .task-node:focus-within .post-remove-btn{opacity:1}
         .nova-scroll::-webkit-scrollbar{width:6px}.nova-scroll::-webkit-scrollbar-thumb{background:rgba(56,230,255,.3);border-radius:3px}
         input::placeholder{color:rgba(180,210,255,.4)}
         .panel-icon{cursor:pointer}
@@ -1639,6 +1743,56 @@ function Nova({ token, onLogout }) {
                 <button onClick={() => { updateVoiceRate(1.05); testVoice(1.05); }} style={{ background: "transparent", border: "1px solid rgba(56,230,255,.3)", color: "rgba(180,210,255,.7)", borderRadius: 6, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>standaard</button>
               </div>
               <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 8, lineHeight: 1.4 }}>Versleep en laat los om te testen. Je voorkeur wordt onthouden.</div>
+
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(56,230,255,.12)" }}>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".5px" }}>Bron</div>
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  <button
+                    onClick={() => updateTtsProvider("browser")}
+                    style={{ flex: 1, border: "none", borderRadius: 6, padding: "6px 8px", background: ttsProvider === "browser" ? `linear-gradient(135deg, ${CYAN}, ${PURPLE})` : "rgba(255,255,255,.05)", color: ttsProvider === "browser" ? "#04122B" : "rgba(180,210,255,.6)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                  >Browser (gratis)</button>
+                  <button
+                    onClick={() => updateTtsProvider("openai")}
+                    style={{ flex: 1, border: "none", borderRadius: 6, padding: "6px 8px", background: ttsProvider === "openai" ? `linear-gradient(135deg, ${CYAN}, ${PURPLE})` : "rgba(255,255,255,.05)", color: ttsProvider === "openai" ? "#04122B" : "rgba(180,210,255,.6)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                  >OpenAI (cent)</button>
+                </div>
+                <div style={{ fontSize: 9, color: "rgba(180,210,255,.45)", lineHeight: 1.4, marginBottom: 10 }}>
+                  {ttsProvider === "openai"
+                    ? "Consistent geluid over alle apparaten. ~1,5 cent per 1000 karakters."
+                    : "Gratis browser-stem. Klinkt anders per apparaat."}
+                </div>
+
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".5px" }}>Stem</div>
+                {ttsProvider === "openai" ? (
+                  <select
+                    value={voiceName || "nova"}
+                    onChange={(e) => { updateVoiceName(e.target.value); }}
+                    style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                  >
+                    <option value="alloy">Alloy — neutraal</option>
+                    <option value="echo">Echo — mannelijk, helder</option>
+                    <option value="fable">Fable — warm verteller</option>
+                    <option value="onyx">Onyx — diep mannelijk</option>
+                    <option value="nova">Nova — vriendelijk vrouwelijk</option>
+                    <option value="shimmer">Shimmer — zacht vrouwelijk</option>
+                    <option value="ash">Ash — kalm helder</option>
+                    <option value="sage">Sage — bedachtzaam</option>
+                    <option value="coral">Coral — warm vrouwelijk</option>
+                  </select>
+                ) : (
+                  <select
+                    value={voiceName}
+                    onChange={(e) => updateVoiceName(e.target.value)}
+                    style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                  >
+                    <option value="">Automatisch (beste beschikbaar)</option>
+                    {availableVoices.map((v) => (<option key={v.name} value={v.name}>{v.name}</option>))}
+                  </select>
+                )}
+                {ttsProvider === "browser" && availableVoices.length === 0 && (
+                  <div style={{ fontSize: 10, color: AMBER, marginTop: 6 }}>Geen Nederlandse stemmen gevonden in deze browser.</div>
+                )}
+              </div>
 
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(56,230,255,.12)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
@@ -1746,8 +1900,21 @@ function Nova({ token, onLogout }) {
                 const key = post.id + "-" + agent.role;
                 const isMarketing = agent.role === "marketing";
                 return (
-                  <div key={key} className="task-node" style={{ left: `${pos.x}%`, top: `${pos.y}%`, zIndex: 3 }} onClick={() => setOpenAgentDetail({ postId: post.id, role: agent.role })} role="button" tabIndex={0}>
-                    <div className="task-card" style={{ borderColor: agent.state === "awaiting" ? CYAN : (isMarketing ? "rgba(127,119,221,.45)" : undefined), background: isMarketing ? "rgba(127,119,221,.08)" : undefined }}>
+                  <div key={key} className="task-node" style={{ left: `${pos.x}%`, top: `${pos.y}%`, zIndex: 3 }} role="button" tabIndex={0}>
+                    {isMarketing && (
+                      <button
+                        className="post-remove-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm("Deze post verwijderen?")) {
+                            setPosts((prev) => prev.filter((p) => p.id !== post.id));
+                          }
+                        }}
+                        title="Post verwijderen"
+                        style={{ position: "absolute", top: -8, right: -8, width: 20, height: 20, borderRadius: "50%", background: "rgba(255,107,138,.9)", color: "#fff", border: "1px solid rgba(255,107,138,1)", fontSize: 11, lineHeight: 1, cursor: "pointer", padding: 0, opacity: 0, transition: "opacity .15s ease", zIndex: 4 }}
+                      >×</button>
+                    )}
+                    <div onClick={() => setOpenAgentDetail({ postId: post.id, role: agent.role })} className="task-card" style={{ borderColor: agent.state === "awaiting" ? CYAN : (isMarketing ? "rgba(127,119,221,.45)" : undefined), background: isMarketing ? "rgba(127,119,221,.08)" : undefined }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                         <span style={{ fontSize: 13 }}>{icon}</span>
                         <span style={{ fontSize: 10, color: "rgba(180,210,255,.7)", textTransform: "uppercase", letterSpacing: ".5px" }}>{label}</span>
@@ -1786,7 +1953,7 @@ function Nova({ token, onLogout }) {
               const x = 50 + Math.cos(angle) * radius;
               const y = 50 + Math.sin(angle) * radius * 0.78;
               return (
-                <div key={p.key} className="panel-icon" style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)", zIndex: 4 }} onClick={p.onClick} role="button" tabIndex={0}>
+                <div key={p.key} className={`panel-icon${p.key === "imp" && improveJustAdded ? " icon-just-saved" : ""}`} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)", zIndex: 4 }} onClick={p.onClick} role="button" tabIndex={0}>
                   <div className="panel-icon-circle" style={{ borderColor: `${p.color}55`, color: p.color }}>
                     <span style={{ fontSize: 16 }}>{p.icon}</span>
                   </div>
@@ -2006,8 +2173,57 @@ function Nova({ token, onLogout }) {
                 <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Contentkalender</div>
                 <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Jouw geplande content + events uit Boeksy met contentadvies</div>
               </div>
+              <button onClick={() => setCalForm((f) => ({ ...f, open: !f.open }))} title="Handmatig event toevoegen" style={{ background: "rgba(127,119,221,.15)", border: "1px solid rgba(127,119,221,.5)", color: "#B3ADEE", borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>{calForm.open ? "× sluit" : "+ event"}</button>
               <button onClick={() => setShowCalendar(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>×</button>
             </div>
+            {calForm.open && (
+              <div style={{ padding: "12px 18px", borderBottom: "1px solid rgba(127,119,221,.15)", background: "rgba(127,119,221,.04)", display: "flex", flexDirection: "column", gap: 8 }}>
+                <input
+                  type="text" value={calForm.title}
+                  onChange={(e) => setCalForm((f) => ({ ...f, title: e.target.value }))}
+                  placeholder="Wat (bijv. bruiloft Jan en Lisa)"
+                  style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 8, padding: "9px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }}
+                />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    type="datetime-local" value={calForm.when}
+                    onChange={(e) => setCalForm((f) => ({ ...f, when: e.target.value }))}
+                    style={{ flex: 2, background: "rgba(4,18,43,.6)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 8, padding: "9px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", colorScheme: "dark" }}
+                  />
+                  <select
+                    value={calForm.channel}
+                    onChange={(e) => setCalForm((f) => ({ ...f, channel: e.target.value }))}
+                    style={{ flex: 1, background: "rgba(4,18,43,.6)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 8, padding: "9px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }}
+                  >
+                    <option value="event">event (geen post)</option>
+                    <option value="instagram">instagram</option>
+                    <option value="tiktok">tiktok</option>
+                    <option value="facebook">facebook</option>
+                    <option value="linkedin">linkedin</option>
+                  </select>
+                </div>
+                <input
+                  type="text" value={calForm.body}
+                  onChange={(e) => setCalForm((f) => ({ ...f, body: e.target.value }))}
+                  placeholder="Korte notitie (optioneel) — bijv. neem rookmachine mee"
+                  style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 8, padding: "9px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }}
+                />
+                <button
+                  onClick={() => {
+                    if (!calForm.title.trim() || !calForm.when) return;
+                    addToCalendar({
+                      title: calForm.title.trim(),
+                      when: new Date(calForm.when).toISOString(),
+                      channel: calForm.channel,
+                      body: calForm.body.trim(),
+                    });
+                    setCalForm({ open: false, title: "", when: "", channel: "instagram", body: "" });
+                  }}
+                  disabled={!calForm.title.trim() || !calForm.when}
+                  style={{ border: "none", borderRadius: 8, padding: "9px 14px", background: (calForm.title && calForm.when) ? "linear-gradient(135deg, #7F77DD, #5A52B5)" : "rgba(255,255,255,.08)", color: (calForm.title && calForm.when) ? "#fff" : "rgba(180,210,255,.4)", fontSize: 13, fontWeight: 700, cursor: (calForm.title && calForm.when) ? "pointer" : "not-allowed", alignSelf: "flex-end" }}
+                >Toevoegen</button>
+              </div>
+            )}
             <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 12, minHeight: 120 }}>
               {/* Boeksy events bovenaan - dat zijn de "harde" data waar omheen content komt */}
               {boeksy?.events && boeksy.events.length > 0 && (
@@ -2169,7 +2385,12 @@ function Nova({ token, onLogout }) {
                       <div style={{ flex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span style={{ fontSize: 13, color: s.done ? "rgba(180,210,255,.55)" : "#fff", fontWeight: 500, textDecoration: s.done ? "line-through" : "none" }}>{i + 1}. {s.title}</span>
-                          {s.auto && (<span style={{ fontSize: 9, color: CYAN, background: "rgba(56,230,255,.1)", padding: "1px 6px", borderRadius: 4, letterSpacing: ".4px", fontWeight: 600 }}>AUTO</span>)}
+                          {s.auto && (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 9, color: s.done ? "#5DCAA5" : CYAN, background: s.done ? "rgba(29,158,117,.12)" : "rgba(56,230,255,.1)", padding: "1px 8px", borderRadius: 4, letterSpacing: ".4px", fontWeight: 600 }}>
+                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.done ? "#5DCAA5" : "rgba(180,210,255,.4)", boxShadow: s.done ? "0 0 6px #5DCAA5" : "none", animation: s.done ? "pulse 2.5s ease-in-out infinite" : "none" }} />
+                              {s.done ? "AUTO · gedetecteerd" : "AUTO · wacht"}
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 4, lineHeight: 1.55 }}>{s.help}</div>
                       </div>
@@ -2529,12 +2750,56 @@ function Nova({ token, onLogout }) {
                 </div>
               )}
 
-              {boeksy.profitLoss && (
-                <div>
-                  <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📊 Winst en verlies (lopend kwartaal)</div>
-                  <pre style={{ fontSize: 11, color: "rgba(220,238,255,.85)", padding: "10px 12px", background: "rgba(239,159,39,.05)", border: "1px solid rgba(239,159,39,.18)", borderRadius: 8, overflow: "auto", margin: 0, whiteSpace: "pre-wrap" }}>{JSON.stringify(boeksy.profitLoss, null, 2)}</pre>
-                </div>
-              )}
+              {boeksy.profitLoss && (() => {
+                // Probeer bekende velden te vinden. Boeksy levert het rapport
+                // in een structuur die we niet 100% kennen, dus we proberen
+                // meerdere veldnamen.
+                const pl = boeksy.profitLoss || {};
+                const findNum = (...keys) => {
+                  for (const k of keys) {
+                    const v = pl[k];
+                    if (typeof v === "number") return v;
+                    if (typeof v === "string" && !isNaN(parseFloat(v))) return parseFloat(v);
+                  }
+                  return null;
+                };
+                const revenue = findNum("revenue", "omzet", "income", "total_revenue", "total_income");
+                const expenses = findNum("expenses", "kosten", "total_expenses", "total_costs");
+                const profit = findNum("profit", "winst", "net_profit", "result");
+                const computedProfit = (revenue != null && expenses != null) ? revenue - expenses : null;
+                const fmt = (n) => n == null ? "—" : "€ " + n.toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+                const anyKnown = revenue != null || expenses != null || profit != null;
+                return (
+                  <div>
+                    <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📊 Winst en verlies (lopend kwartaal)</div>
+                    {anyKnown ? (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
+                        <div style={{ padding: "10px 12px", background: "rgba(29,158,117,.07)", border: "1px solid rgba(29,158,117,.2)", borderRadius: 8 }}>
+                          <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)", textTransform: "uppercase", letterSpacing: ".4px", marginBottom: 4 }}>Omzet</div>
+                          <div style={{ fontSize: 16, color: "#5DCAA5", fontWeight: 700 }}>{fmt(revenue)}</div>
+                        </div>
+                        <div style={{ padding: "10px 12px", background: "rgba(239,159,39,.07)", border: "1px solid rgba(239,159,39,.2)", borderRadius: 8 }}>
+                          <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)", textTransform: "uppercase", letterSpacing: ".4px", marginBottom: 4 }}>Kosten</div>
+                          <div style={{ fontSize: 16, color: AMBER, fontWeight: 700 }}>{fmt(expenses)}</div>
+                        </div>
+                        <div style={{ padding: "10px 12px", background: "rgba(56,230,255,.07)", border: "1px solid rgba(56,230,255,.2)", borderRadius: 8 }}>
+                          <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)", textTransform: "uppercase", letterSpacing: ".4px", marginBottom: 4 }}>Winst</div>
+                          <div style={{ fontSize: 16, color: CYAN, fontWeight: 700 }}>{fmt(profit != null ? profit : computedProfit)}</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginBottom: 8 }}>
+                        Boeksy gaf een onbekend rapport-formaat terug. Hieronder de ruwe gegevens.
+                      </div>
+                    )}
+                    <details style={{ marginTop: 4 }}>
+                      <summary style={{ fontSize: 10, color: "rgba(180,210,255,.5)", cursor: "pointer", padding: "4px 0" }}>Toon ruwe gegevens van Boeksy</summary>
+                      <pre style={{ fontSize: 10, color: "rgba(220,238,255,.75)", padding: "10px 12px", background: "rgba(4,18,43,.5)", border: "1px solid rgba(180,210,255,.1)", borderRadius: 8, overflow: "auto", margin: "6px 0 0", whiteSpace: "pre-wrap", maxHeight: 200 }}>{JSON.stringify(boeksy.profitLoss, null, 2)}</pre>
+                    </details>
+                  </div>
+                );
+              })()}
 
               {boeksy.relationsError && <div style={{ fontSize: 11, color: "#FF8FA3" }}>Fout bij ophalen klanten: {boeksy.relationsError}</div>}
               {boeksy.invoicesError && <div style={{ fontSize: 11, color: "#FF8FA3" }}>Fout bij ophalen facturen: {boeksy.invoicesError}</div>}
@@ -2580,6 +2845,14 @@ function Nova({ token, onLogout }) {
               <button onClick={() => setPendingWA(null)} style={{ flex: 1, border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "10px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Annuleren</button>
               <button onClick={() => { const wa = pendingWA; setPendingWA(null); sendWhatsApp(wa.to, wa.message); }} style={{ flex: 1, border: "none", borderRadius: 10, padding: "10px", background: "linear-gradient(135deg, #1D9E75, #0F6E56)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Versturen</button>
             </div>
+          </div>
+        </div>
+      )}
+      {toast && (
+        <div style={{ position: "fixed", top: 80, left: "50%", transform: "translateX(-50%)", zIndex: 50, animation: "toastSlide 2.8s ease-in-out forwards", pointerEvents: "none" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 18px", background: "rgba(6,24,47,.95)", border: `1px solid ${toast.color || CYAN}`, borderRadius: 22, color: "#E8F1FF", fontSize: 13, fontWeight: 500, boxShadow: `0 4px 20px ${toast.color || CYAN}55`, backdropFilter: "blur(10px)" }}>
+            <span style={{ fontSize: 16 }}>{toast.icon}</span>
+            <span>{toast.text}</span>
           </div>
         </div>
       )}
