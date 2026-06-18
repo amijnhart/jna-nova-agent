@@ -90,9 +90,118 @@ function parseReply(raw) {
   return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post, voice };
 }
 
-// Actie-sterren plaatsen in een veilige zone rond de cirkel. We vermijden
-// de buitenrand (waar panel-iconen zitten) en de vier post-agent posities,
-// zodat tekst niet door elkaar loopt.
+// Bereken aankomende events uit Boeksy-data. Een event is een offerte of factuur
+// met een event_date. Per event berekenen we welk content-advies relevant is op
+// basis van het aantal dagen tot het event. Output-formaat matcht de UI in het
+// kalender-paneel (e.klant, e.subject, e.date, e.boeksySource, e.advice).
+function deriveBoeksyEvents(boeksy) {
+  if (!boeksy || !boeksy.configured) return [];
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const items = [];
+
+  function add(source, type) {
+    if (!Array.isArray(source)) return;
+    for (const it of source) {
+      if (!it.event_date) continue;
+      const dt = new Date(it.event_date);
+      if (isNaN(dt.getTime())) continue;
+      const days = Math.round((dt.getTime() - now.getTime()) / 86400000);
+      if (days < -7) continue; // events ouder dan 7 dagen niet meer tonen
+
+      // Contentadvies per timing-fase. Elk advies heeft een datum (when) zodat
+      // het zichtbaar wordt in de tijdlijn rond het event.
+      const advice = [];
+      const klant = it.relation || "deze klant";
+      const subject = it.subject || "deze gig";
+      const dayName = dt.toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+      const ev = new Date(dt);
+
+      // Pre-build (5-7 dagen vooraf): voorbereidings-content
+      if (days >= 4) {
+        const when = new Date(ev); when.setDate(when.getDate() - 5);
+        advice.push({
+          type: "pre-build",
+          title: `Pre-event teaser voor ${klant}`,
+          body: `Heb je nieuwe apparatuur of opstelling sinds vorige keer? Toon dat. Of een korte introductie van de gig: "${subject}" op ${dayName}.`,
+          when: when.toISOString(),
+        });
+      }
+      // Teaser (1-3 dagen vooraf): aankondiging
+      if (days >= 1 && days <= 3) {
+        const when = new Date(ev); when.setDate(when.getDate() - 2);
+        advice.push({
+          type: "teaser",
+          title: `Aankondiging "${subject}"`,
+          body: `Tijd om je publiek te laten weten dat je ${dayName} bij ${klant} draait. Sfeerbeeld, mood, energie.`,
+          when: when.toISOString(),
+        });
+      }
+      // On-site (op de dag zelf): footage schieten
+      if (days === 0) {
+        advice.push({
+          type: "on-site",
+          title: `On-site footage vandaag`,
+          body: `Schiet beeldmateriaal van je opstelling, de plek, het publiek en sfeerbeelden. Materiaal voor recap-posts deze week.`,
+          when: dt.toISOString(),
+        });
+      }
+      // Recap (1-3 dagen na): nawerk
+      if (days >= -3 && days <= -1) {
+        const when = new Date(ev); when.setDate(when.getDate() + 2);
+        advice.push({
+          type: "recap",
+          title: `Recap-post over ${klant}`,
+          body: `Recap-content over "${subject}". Gebruik beeldmateriaal van die avond. Bedank ${klant} en het publiek.`,
+          when: when.toISOString(),
+        });
+      }
+
+      items.push({
+        id: type + "-" + it.id,
+        boeksySource: type,
+        klant: it.relation || "",
+        subject: it.subject || "",
+        date: it.event_date,
+        days,
+        number: it.number,
+        total: it.total,
+        status: it.status,
+        advice,
+      });
+    }
+  }
+  add(boeksy.quotes, "quote");
+  add(boeksy.invoices, "invoice");
+  items.sort((a, b) => Math.abs(a.days) - Math.abs(b.days));
+  return items;
+}
+
+// Offertes die follow-up nodig hebben: open status, ouder dan 14 dagen.
+// We sturen GEEN automatische mail (Boeksy heeft die functie zelf) maar
+// signaleren alleen welke aandacht verdienen.
+function deriveFollowUpQuotes(boeksy) {
+  if (!boeksy || !boeksy.configured || !Array.isArray(boeksy.quotes)) return [];
+  const now = new Date();
+  return boeksy.quotes.filter((q) => {
+    const status = (q.status || "").toLowerCase();
+    if (status.includes("accepted") || status.includes("geaccepteerd") || status.includes("rejected") || status.includes("afgewezen") || status.includes("declined")) return false;
+    if (!q.date) return false;
+    const sent = new Date(q.date);
+    if (isNaN(sent.getTime())) return false;
+    const daysOpen = Math.round((now.getTime() - sent.getTime()) / 86400000);
+    return daysOpen >= 14;
+  }).map((q) => ({
+    id: q.id,
+    number: q.number,
+    klant: q.relation,
+    subject: q.subject,
+    daysOpen: Math.round((new Date().getTime() - new Date(q.date).getTime()) / 86400000),
+    total: q.total,
+  }));
+}
+
+// Actie-sterren plaatsen in een veilige zone rond de cirkel.
 function orbitPos(index = 0, total = 1) {
   // Verdeel de actie-sterren over een ring vlak onder de cirkel (radius 28-32),
   // gespreid in een halve cirkel onderaan zodat ze niet overlappen met panel-iconen.
@@ -510,6 +619,9 @@ function Nova({ token, onLogout }) {
       try {
         const rB = await fetch(BOEKSY_URL, { headers: { Authorization: "Bearer " + token } });
         const dB = await rB.json();
+        // Verrijk de data met afgeleide events en follow-up signalen
+        dB.events = deriveBoeksyEvents(dB);
+        dB.followUps = deriveFollowUpQuotes(dB);
         setBoeksy(dB);
       } catch (e) { void e; }
       try {
@@ -1264,13 +1376,15 @@ function Nova({ token, onLogout }) {
       urgent: !!m.urgent,
       received: m.received,
     }));
-    // Compacte Boeksy-context: klanten, recente facturen/offertes, W&V
+    // Compacte Boeksy-context: klanten, recente facturen/offertes, W&V, events, follow-ups
     const b = boeksyRef.current;
     const boeksyContext = (b && b.configured) ? {
       relations: (b.relations || []).slice(0, 30).map((r) => ({ name: r.name, type: r.type, email: r.email })),
-      invoices: (b.invoices || []).slice(0, 15).map((i) => ({ number: i.number, date: i.date, subject: i.subject, total: i.total, status: i.status, klant: i.relation })),
-      quotes: (b.quotes || []).slice(0, 15).map((q) => ({ number: q.number, date: q.date, subject: q.subject, total: q.total, status: q.status, klant: q.relation })),
+      invoices: (b.invoices || []).slice(0, 15).map((i) => ({ number: i.number, date: i.date, event_date: i.event_date, subject: i.subject, total: i.total, status: i.status, klant: i.relation })),
+      quotes: (b.quotes || []).slice(0, 15).map((q) => ({ number: q.number, date: q.date, event_date: q.event_date, subject: q.subject, total: q.total, status: q.status, klant: q.relation })),
       profitLoss: b.profitLoss || null,
+      events: (b.events || []).slice(0, 10).map((e) => ({ date: e.date, days: e.days, subject: e.subject, klant: e.klant, source: e.boeksySource })),
+      followUps: (b.followUps || []).slice(0, 10).map((f) => ({ number: f.number, klant: f.klant, subject: f.subject, daysOpen: f.daysOpen, total: f.total })),
     } : null;
     const res = await fetch(CHAT_URL, {
       method: "POST",
@@ -1885,28 +1999,96 @@ function Nova({ token, onLogout }) {
 
       {showCalendar && (
         <div onClick={() => setShowCalendar(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 21, padding: 20 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "82vh", background: "#06182F", border: "1px solid rgba(127,119,221,.35)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(620px, 100%)", maxHeight: "86vh", background: "#06182F", border: "1px solid rgba(127,119,221,.35)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid rgba(127,119,221,.2)" }}>
               <span style={{ fontSize: 18 }}>🗓️</span>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Contentkalender</div>
-                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Geplande content · posten gaat automatisch zodra het kanaal gekoppeld is</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Jouw geplande content + events uit Boeksy met contentadvies</div>
               </div>
               <button onClick={() => setShowCalendar(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>×</button>
             </div>
-            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8, minHeight: 120 }}>
-              {calendar.length === 0 && (<div style={{ fontSize: 13, color: "rgba(180,210,255,.55)", lineHeight: 1.6, textAlign: "center", padding: "26px 10px" }}>Nog geen content ingepland. Vraag NOVA bijvoorbeeld om een TikTok-post voor zaterdag in te plannen.</div>)}
-              {calendar.map((c) => (
-                <div key={c.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "rgba(127,119,221,.07)", border: "1px solid rgba(127,119,221,.22)", borderRadius: 10 }}>
-                  <span style={{ fontSize: 13 }}>{agentIcon(c.channel)}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.4 }}>{c.title}</div>
-                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 2 }}>{c.channel} · {(() => { try { return new Date(c.when).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch { return c.when; } })()} · {c.status}</div>
-                    {c.body && (<div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 4, lineHeight: 1.4 }}>{c.body}</div>)}
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 12, minHeight: 120 }}>
+              {/* Boeksy events bovenaan - dat zijn de "harde" data waar omheen content komt */}
+              {boeksy?.events && boeksy.events.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#5DCAA5", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>💼</span> Events uit Boeksy ({boeksy.events.length})
                   </div>
-                  <button onClick={() => deleteCalendarItem(c.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.4)", cursor: "pointer", fontSize: 15 }}>×</button>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {boeksy.events.map((e) => {
+                      const eventDate = new Date(e.date);
+                      const isPast = eventDate.getTime() < Date.now() - 12 * 60 * 60 * 1000;
+                      const dateStr = isNaN(eventDate.getTime()) ? e.date : eventDate.toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+                      return (
+                        <div key={e.id} style={{ padding: "12px 14px", background: "rgba(29,158,117,.07)", border: "1px solid rgba(29,158,117,.25)", borderRadius: 10, opacity: isPast ? 0.7 : 1 }}>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+                            <span style={{ fontSize: 13, color: "#E8F1FF", fontWeight: 600 }}>{e.klant || "?"}</span>
+                            {e.boeksySource === "quote" && <span style={{ fontSize: 9, color: "#B3ADEE", background: "rgba(127,119,221,.15)", padding: "1px 6px", borderRadius: 4, letterSpacing: ".4px", fontWeight: 600 }}>OFFERTE</span>}
+                            {e.boeksySource === "invoice" && <span style={{ fontSize: 9, color: CYAN, background: "rgba(56,230,255,.12)", padding: "1px 6px", borderRadius: 4, letterSpacing: ".4px", fontWeight: 600 }}>FACTUUR</span>}
+                          </div>
+                          {e.subject && <div style={{ fontSize: 12, color: "rgba(220,238,255,.85)", lineHeight: 1.4 }}>{e.subject}</div>}
+                          <div style={{ fontSize: 11, color: "#5DCAA5", marginTop: 4 }}>{dateStr}</div>
+                          {!isPast && e.advice && e.advice.length > 0 && (
+                            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(29,158,117,.18)" }}>
+                              <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".4px" }}>📣 Contentadvies van NOVA</div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                {e.advice.map((a, i) => {
+                                  const adviceDate = new Date(a.when);
+                                  const adviceStr = isNaN(adviceDate.getTime()) ? a.when : adviceDate.toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" });
+                                  const colorByType = a.type === "pre-build" ? "#B3ADEE" : a.type === "teaser" ? AMBER : a.type === "on-site" ? CYAN : "#5DCAA5";
+                                  return (
+                                    <div key={i} style={{ padding: "8px 10px", background: "rgba(4,18,43,.4)", borderLeft: `2px solid ${colorByType}`, borderRadius: 6 }}>
+                                      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 3 }}>
+                                        <span style={{ fontSize: 11, color: colorByType, fontWeight: 600 }}>{a.title}</span>
+                                        <span style={{ marginLeft: "auto", fontSize: 9, color: "rgba(180,210,255,.5)" }}>{adviceStr}</span>
+                                      </div>
+                                      <div style={{ fontSize: 11, color: "rgba(220,238,255,.75)", lineHeight: 1.4 }}>{a.body}</div>
+                                      <button
+                                        onClick={() => {
+                                          // Start een multi-agent workflow met deze suggestie als onderwerp
+                                          const channel = a.type === "on-site" ? "instagram-story" : "instagram";
+                                          startPostWorkflow({ channel, topic: a.title });
+                                          setShowCalendar(false);
+                                        }}
+                                        style={{ marginTop: 6, border: "none", borderRadius: 6, padding: "4px 10px", background: `${colorByType}22`, color: colorByType, fontSize: 10, fontWeight: 600, cursor: "pointer" }}
+                                      >Laat NOVA dit maken →</button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              ))}
+              )}
+
+              {/* Handmatige kalender-items */}
+              {calendar.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#B3ADEE", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8, marginTop: boeksy?.events?.length ? 6 : 0 }}>🎨 Jouw geplande content</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {calendar.map((c) => (
+                      <div key={c.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "rgba(127,119,221,.07)", border: "1px solid rgba(127,119,221,.22)", borderRadius: 10 }}>
+                        <span style={{ fontSize: 13 }}>{agentIcon(c.channel)}</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.4 }}>{c.title}</div>
+                          <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 2 }}>{c.channel} · {(() => { try { return new Date(c.when).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch { return c.when; } })()} · {c.status}</div>
+                          {c.body && (<div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginTop: 4, lineHeight: 1.4 }}>{c.body}</div>)}
+                        </div>
+                        <button onClick={() => deleteCalendarItem(c.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.4)", cursor: "pointer", fontSize: 15 }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {calendar.length === 0 && (!boeksy?.events || boeksy.events.length === 0) && (
+                <div style={{ fontSize: 13, color: "rgba(180,210,255,.55)", lineHeight: 1.6, textAlign: "center", padding: "26px 10px" }}>Nog geen content of events. Vraag NOVA om een post in te plannen, of voeg in Boeksy een offerte/factuur met een event_date toe - dan verschijnt het hier met contentadvies.</div>
+              )}
             </div>
           </div>
         </div>
@@ -2278,6 +2460,29 @@ function Nova({ token, onLogout }) {
               <button onClick={() => setShowBoeksy(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px", minWidth: 32, minHeight: 32 }}>×</button>
             </div>
             <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+              {boeksy.followUps && boeksy.followUps.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>⚠️</span> Follow-up benodigd ({boeksy.followUps.length})
+                  </div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", marginBottom: 8, lineHeight: 1.5 }}>
+                    Deze offertes staan 14 dagen of langer open zonder reactie. Follow-up kan via Boeksy zelf, of vraag NOVA om een concept.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {boeksy.followUps.map((f) => (
+                      <div key={f.id} style={{ padding: "10px 12px", background: "rgba(239,159,39,.07)", border: "1px solid rgba(239,159,39,.25)", borderRadius: 8, fontSize: 12 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 2 }}>
+                          <span style={{ color: AMBER, fontWeight: 600 }}>{f.number || "concept"}</span>
+                          <span style={{ color: "#E8F1FF" }}>{f.klant || ""}</span>
+                          <span style={{ marginLeft: "auto", fontSize: 10, color: AMBER }}>{f.daysOpen} dagen open</span>
+                        </div>
+                        {f.subject && <div style={{ color: "rgba(220,238,255,.7)", fontSize: 11 }}>{f.subject}{f.total ? ` · € ${f.total}` : ""}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {boeksy.relations && boeksy.relations.length > 0 && (
                 <div>
                   <div style={{ fontSize: 11, color: "#5DCAA5", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>👥 Klanten en leveranciers ({boeksy.relations.length})</div>
