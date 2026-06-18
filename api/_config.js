@@ -14,8 +14,9 @@
 //
 // OPTIONEEL:
 //   VITE_NOVA_NAME      je voornaam voor de begroeting (bijv. Jordi)
-//   KV_REST_API_URL     blijvende opslag via Vercel KV (Storage > KV > Connect)
-//   KV_REST_API_TOKEN   bijbehorend token (wordt door Vercel automatisch gezet)
+//   REDIS_URL           blijvende opslag via Redis-connectiestring (Marketplace/Upstash)
+//   KV_REST_API_URL     OF: blijvende opslag via oudere Vercel KV REST
+//   KV_REST_API_TOKEN   bijbehorend token bij KV REST
 //
 // TOEKOMSTIGE KOPPELINGEN (nog niet actief, plek staat klaar):
 //   IMAP_HOST + IMAP_USER + IMAP_PASS  voor mail via IMAP (werkt overal)
@@ -45,15 +46,60 @@ export const CONFIG = {
 };
 
 // ----------------------------------------------------------------------------
-// OPSLAG - blijvend bewaren via Vercel KV, of tijdelijk in geheugen als KV nog
-// niet gekoppeld is. Alle datalijsten van NOVA (verbeterpunten, productcatalogus,
-// contentkalender, onboarding-voortgang) gebruiken deze laag.
+// OPSLAG - blijvend bewaren. We ondersteunen drie manieren in deze volgorde:
+//   1. REDIS_URL          standaard Redis-connectiestring (Vercel "Marketplace Redis",
+//                         Upstash, of zelf-gehoste Redis). Werkt direct met het
+//                         "redis" npm-pakket.
+//   2. KV_REST_API_URL    Vercel KV REST API (oudere Vercel KV-product).
+//   3. memoryStore        in-memory fallback als beide ontbreken. Verdwijnt bij
+//                         elke serverless restart - alleen voor lokaal testen.
 // ----------------------------------------------------------------------------
 
 const memoryStore = new Map();
 
+function hasRedisUrl() {
+  return !!process.env.REDIS_URL;
+}
+
 function hasKV() {
   return !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+}
+
+// Redis client wordt eenmalig gemaakt en hergebruikt. In een serverless omgeving
+// blijft de client bestaan zolang het lambda-proces leeft, wat verbindingen
+// uitspaart.
+let redisClient = null;
+let redisConnecting = null;
+
+async function getRedis() {
+  if (!hasRedisUrl()) return null;
+  if (redisClient && redisClient.isOpen) return redisClient;
+  if (redisConnecting) return await redisConnecting;
+
+  redisConnecting = (async () => {
+    const { createClient } = await import("redis");
+    const client = createClient({ url: process.env.REDIS_URL });
+    client.on("error", (err) => console.error("Redis-fout:", err.message));
+    await client.connect();
+    redisClient = client;
+    redisConnecting = null;
+    return client;
+  })();
+  return await redisConnecting;
+}
+
+async function redisGet(key) {
+  const c = await getRedis();
+  if (!c) return null;
+  const raw = await c.get(key);
+  if (raw === null || raw === undefined) return null;
+  try { return JSON.parse(raw); } catch { return raw; }
+}
+
+async function redisSet(key, value) {
+  const c = await getRedis();
+  if (!c) return;
+  await c.set(key, JSON.stringify(value));
 }
 
 async function kvGet(key) {
@@ -74,16 +120,26 @@ async function kvSet(key, value) {
 }
 
 export async function readData(key, fallback = []) {
+  // Probeer eerst Redis-URL (standaard Redis), dan KV REST, dan geheugen.
+  if (hasRedisUrl()) {
+    try {
+      const v = await redisGet(key);
+      return v === null ? fallback : v;
+    } catch (err) { console.error("Redis read fout:", err.message); /* val terug */ }
+  }
   if (hasKV()) {
     try {
       const v = await kvGet(key);
       return v === null ? fallback : v;
-    } catch { /* val terug op geheugen */ }
+    } catch { /* val terug */ }
   }
   return memoryStore.has(key) ? memoryStore.get(key) : fallback;
 }
 
 export async function writeData(key, value) {
+  if (hasRedisUrl()) {
+    try { await redisSet(key, value); return; } catch (err) { console.error("Redis write fout:", err.message); /* val terug */ }
+  }
   if (hasKV()) {
     try { await kvSet(key, value); return; } catch { /* val terug */ }
   }
@@ -100,16 +156,7 @@ export const KEYS = {
 };
 
 // Lijst alle KV-keys op die bij deze app horen. Wordt gebruikt door de
-// backup-functie om alle data in één keer te exporteren.
+// backup-functie om alle data in een keer te exporteren.
 export async function listAllKeys() {
-  if (!hasKV()) {
-    return Array.from(memoryStore.keys());
-  }
-  try {
-    // Vercel KV ondersteunt SCAN/KEYS via REST. We gebruiken hier alle bekende
-    // keys uit KEYS plus eventuele andere via KEYS-lijst.
-    return Object.values(KEYS);
-  } catch {
-    return Object.values(KEYS);
-  }
+  return Object.values(KEYS);
 }
