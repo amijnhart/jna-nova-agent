@@ -1486,7 +1486,7 @@ function Nova({ token, onLogout }) {
         @media (max-width: 480px){
           .nova-orb-area{padding:12px!important;min-height:460px!important}
         }
-        @media(prefers-reduced-motion:reduce){*{animation:none!important}.idle-star{transition:opacity .4s}}
+        @media(prefers-reduced-motion:reduce){.idle-star{transition:opacity .4s}}
       `}</style>
 
       <div style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}>
