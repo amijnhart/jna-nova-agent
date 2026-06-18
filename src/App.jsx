@@ -339,6 +339,12 @@ export default function App() {
 }
 
 function Nova({ token, onLogout }) {
+  const [justEntered, setJustEntered] = useState(true);
+  useEffect(() => {
+    // Reset het inlog-overgangseffect na 2 seconden zodat de cirkel weer normaal verder draait
+    const t = setTimeout(() => setJustEntered(false), 2000);
+    return () => clearTimeout(t);
+  }, []);
   const [messages, setMessages] = useState([
     { role: "assistant", content: "Goedendag. Ik ben NOVA, de agent van JnA Events. Stel me een vraag of geef een opdracht. Vraag je iets dat werk vereist, dan zet ik een agent aan het werk en zie je die als taak rond de cirkel verschijnen." },
   ]);
@@ -1194,6 +1200,8 @@ function Nova({ token, onLogout }) {
         @keyframes actIn{0%{opacity:0;transform:translate(-50%,-50%) scale(.4)}100%{opacity:1;transform:translate(-50%,-50%) scale(1)}}
         @keyframes starFade{0%{opacity:0;transform:translate(-50%,-50%) scale(.5)}20%{opacity:.85;transform:translate(-50%,-50%) scale(1)}55%{opacity:.85;transform:translate(-50%,-50%) scale(1)}80%{opacity:0;transform:translate(-50%,-50%) scale(.6)}100%{opacity:0;transform:translate(-50%,-50%) scale(.5)}}
         @keyframes taskIn{0%{opacity:0;transform:translate(-50%,-50%) scale(.6)}100%{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+        @keyframes orbEnter{0%{transform:scale(.5) translateY(-12px);opacity:.4;filter:brightness(1.8)}60%{transform:scale(1.08) translateY(0);opacity:1;filter:brightness(1.3)}100%{transform:scale(1) translateY(0);opacity:1;filter:brightness(1)}}
+        @keyframes orbBloom{0%{box-shadow:0 0 0 0 rgba(56,230,255,.6),inset 0 0 20px rgba(56,230,255,.25)}50%{box-shadow:0 0 80px 20px rgba(56,230,255,.4),inset 0 0 30px rgba(56,230,255,.4)}100%{box-shadow:0 0 30px rgba(56,230,255,.35),inset 0 0 20px rgba(56,230,255,.25)}}
         .ring{position:absolute;border-radius:50%;border:1px solid rgba(56,230,255,.25)}
         .idle-star{position:absolute;border-radius:50%;background:${CYAN};box-shadow:0 0 8px ${CYAN},0 0 16px rgba(56,230,255,.5);transform:translate(-50%,-50%);transition:left 3s ease-in-out,top 3s ease-in-out;pointer-events:none;animation:starFade linear infinite}
         .act-star{position:absolute;transform:translate(-50%,-50%);animation:actIn .45s cubic-bezier(.2,1.3,.5,1) both;cursor:pointer;z-index:5}
@@ -1352,11 +1360,11 @@ function Nova({ token, onLogout }) {
             });
           })()}
 
-          <div style={{ position: "relative", width: 320, height: 320, animation: "float 6s ease-in-out infinite", zIndex: 2 }}>
-            <div className="ring" style={{ inset: 0, animation: "spinR 24s linear infinite", borderTopColor: CYAN, borderRightColor: "rgba(56,230,255,.1)", borderBottomColor: "transparent", borderLeftColor: "transparent" }} />
-            <div className="ring" style={{ inset: 20, animation: "spinL 30s linear infinite", borderTopColor: "transparent", borderRightColor: "transparent", borderBottomColor: PURPLE, borderLeftColor: "rgba(127,119,221,.1)" }} />
+          <div style={{ position: "relative", width: 320, height: 320, animation: justEntered ? "orbEnter 1.6s cubic-bezier(.2,1.1,.3,1) both, float 6s ease-in-out infinite 1.6s" : "float 6s ease-in-out infinite", zIndex: 2 }}>
+            <div className="ring" style={{ inset: 0, animation: "spinR 24s linear infinite", borderTopColor: CYAN, borderBottomColor: "transparent" }} />
+            <div className="ring" style={{ inset: 20, animation: "spinL 30s linear infinite", borderBottomColor: PURPLE, borderTopColor: "transparent" }} />
             <div className="ring" style={{ inset: 44, animation: "spinR 18s linear infinite", borderColor: "rgba(56,230,255,.12)", borderTopColor: "rgba(56,230,255,.4)" }} />
-            <div style={{ position: "absolute", inset: 90, borderRadius: "50%", background: "radial-gradient(circle at 40% 35%, rgba(56,230,255,.35), rgba(127,119,221,.25) 60%, rgba(4,18,43,.9) 100%)", border: "1px solid rgba(56,230,255,.4)", boxShadow: coreShadow, display: "flex", alignItems: "center", justifyContent: "center", transition: orbState === "speaking" ? "box-shadow .1s ease-out" : "box-shadow .4s", animation: orbState === "idle" ? "pulse 4s ease-in-out infinite" : "none" }}>
+            <div style={{ position: "absolute", inset: 90, borderRadius: "50%", background: "radial-gradient(circle at 40% 35%, rgba(56,230,255,.35), rgba(127,119,221,.25) 60%, rgba(4,18,43,.9) 100%)", border: "1px solid rgba(56,230,255,.4)", boxShadow: coreShadow, display: "flex", alignItems: "center", justifyContent: "center", transition: orbState === "speaking" ? "box-shadow .1s ease-out" : "box-shadow .4s", animation: justEntered ? "orbBloom 1.6s ease-out both" : (orbState === "idle" ? "pulse 4s ease-in-out infinite" : "none") }}>
               <div style={{ fontSize: 18, fontWeight: 800, textAlign: "center", lineHeight: 1.1, letterSpacing: 1, color: "#fff", textShadow: `0 0 18px ${CYAN}` }}>
                 JnA<div style={{ fontSize: 10, letterSpacing: 3, color: CYAN, marginTop: 2 }}>EVENTS</div>
               </div>
