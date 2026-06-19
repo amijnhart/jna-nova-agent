@@ -558,6 +558,8 @@ function Nova({ token, onLogout }) {
   // Diagnose-info over de opslag - laat zien of we Redis/KV/geheugen gebruiken
   const [storageInfo, setStorageInfo] = useState(null);
   const [showStorageInfo, setShowStorageInfo] = useState(false);
+  // Eén centraal instellingen-paneel voor stem, mic, notificaties en opslag
+  const [showSettings, setShowSettings] = useState(false);
   // Mic-diagnose paneel om iOS Safari problemen op te sporen
   const [showMicDiag, setShowMicDiag] = useState(false);
   const [micDiag, setMicDiag] = useState(null);
@@ -2266,154 +2268,18 @@ function Nova({ token, onLogout }) {
           <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)", letterSpacing: 1 }}>NOVA · engineering &amp; design</div>
         </div>
         <div className="nova-status-badge" style={{ marginLeft: "auto", fontSize: 11, color: CYAN, border: "1px solid rgba(56,230,255,.3)", padding: "4px 12px", borderRadius: 20, letterSpacing: 1 }}>{status}</div>
-        <div className="voice-wrapper" onMouseEnter={() => setShowVoicePanel(true)} onMouseLeave={() => setShowVoicePanel(false)} style={{ position: "relative" }}>
-          <button onClick={() => { if (window.matchMedia && window.matchMedia("(hover: none)").matches) { setShowVoicePanel((v) => !v); } else { toggleVoice(); } }} aria-label="Stem-instellingen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: voiceOn ? "rgba(56,230,255,.12)" : "transparent", color: voiceOn ? CYAN : "rgba(180,210,255,.5)", cursor: "pointer", fontSize: 15 }}>{voiceOn ? "🔊" : "🔇"}</button>
-          {showVoicePanel && (
-            <div style={{ position: "absolute", top: 44, right: 0, background: "rgba(6,24,47,.96)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 12, padding: "12px 14px", minWidth: 220, zIndex: 50, boxShadow: "0 6px 24px rgba(0,0,0,.4)", backdropFilter: "blur(10px)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid rgba(56,230,255,.12)" }}>
-                <span style={{ fontSize: 12, color: "rgba(220,238,255,.85)" }}>Stem</span>
-                <button onClick={toggleVoice} style={{ border: "none", borderRadius: 6, padding: "4px 10px", background: voiceOn ? "rgba(29,158,117,.2)" : "rgba(255,107,138,.15)", color: voiceOn ? "#5DCAA5" : "#FF8FA3", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{voiceOn ? "🔊 aan" : "🔇 uit"}</button>
-              </div>
-              <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".5px" }}>Spraaktempo</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>traag</span>
-                <input
-                  type="range" min="0.7" max="1.5" step="0.05" value={voiceRate}
-                  onChange={(e) => updateVoiceRate(parseFloat(e.target.value))}
-                  onMouseUp={(e) => testVoice(parseFloat(e.target.value))}
-                  onTouchEnd={(e) => testVoice(parseFloat(e.target.value))}
-                  style={{ flex: 1, accentColor: CYAN, cursor: "pointer" }}
-                />
-                <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>snel</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-                <span style={{ fontSize: 11, color: CYAN, fontWeight: 600 }}>{voiceRate.toFixed(2)}×</span>
-                <button onClick={() => { updateVoiceRate(1.05); testVoice(1.05); }} style={{ background: "transparent", border: "1px solid rgba(56,230,255,.3)", color: "rgba(180,210,255,.7)", borderRadius: 6, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>standaard</button>
-              </div>
-              <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 8, lineHeight: 1.4 }}>Versleep en laat los om te testen. Je voorkeur wordt onthouden.</div>
-
-              <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(56,230,255,.12)" }}>
-                <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".5px" }}>Bron</div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-                  <button
-                    onClick={() => updateTtsProvider("browser")}
-                    style={{ flex: 1, border: "none", borderRadius: 6, padding: "6px 8px", background: ttsProvider === "browser" ? `linear-gradient(135deg, ${CYAN}, ${PURPLE})` : "rgba(255,255,255,.05)", color: ttsProvider === "browser" ? "#04122B" : "rgba(180,210,255,.6)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
-                  >Browser (gratis)</button>
-                  <button
-                    onClick={() => updateTtsProvider("openai")}
-                    style={{ flex: 1, border: "none", borderRadius: 6, padding: "6px 8px", background: ttsProvider === "openai" ? `linear-gradient(135deg, ${CYAN}, ${PURPLE})` : "rgba(255,255,255,.05)", color: ttsProvider === "openai" ? "#04122B" : "rgba(180,210,255,.6)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
-                  >OpenAI (cent)</button>
-                </div>
-                <div style={{ fontSize: 9, color: "rgba(180,210,255,.45)", lineHeight: 1.4, marginBottom: 10 }}>
-                  {ttsProvider === "openai"
-                    ? "Consistent geluid over alle apparaten. ~1,5 cent per 1000 karakters."
-                    : "Gratis browser-stem. Klinkt anders per apparaat."}
-                </div>
-
-                <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".5px" }}>Stem</div>
-                {ttsProvider === "openai" ? (
-                  <select
-                    value={voiceName || "nova"}
-                    onChange={(e) => { updateVoiceName(e.target.value); }}
-                    style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
-                  >
-                    <option value="alloy">Alloy — neutraal</option>
-                    <option value="echo">Echo — mannelijk, helder</option>
-                    <option value="fable">Fable — warm verteller</option>
-                    <option value="onyx">Onyx — diep mannelijk</option>
-                    <option value="nova">Nova — vriendelijk vrouwelijk</option>
-                    <option value="shimmer">Shimmer — zacht vrouwelijk</option>
-                    <option value="ash">Ash — kalm helder</option>
-                    <option value="sage">Sage — bedachtzaam</option>
-                    <option value="coral">Coral — warm vrouwelijk</option>
-                  </select>
-                ) : (
-                  <select
-                    value={voiceName}
-                    onChange={(e) => updateVoiceName(e.target.value)}
-                    style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
-                  >
-                    <option value="">Automatisch (beste beschikbaar)</option>
-                    {availableVoices.map((v) => (<option key={v.name} value={v.name}>{v.name}</option>))}
-                  </select>
-                )}
-                {ttsProvider === "browser" && availableVoices.length === 0 && (
-                  <div style={{ fontSize: 10, color: AMBER, marginTop: 6 }}>Geen Nederlandse stemmen gevonden in deze browser.</div>
-                )}
-
-                {ttsProvider === "openai" && (
-                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(56,230,255,.12)" }}>
-                    <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 6, textTransform: "uppercase", letterSpacing: ".5px" }}>Stemmen per agent</div>
-                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", lineHeight: 1.4, marginBottom: 10 }}>Geef elke agent een eigen stem. Werkt alleen bij OpenAI-bron.</div>
-
-                    {[
-                      { role: "marketing", icon: "📣", label: "Marketing Director" },
-                      { role: "content", icon: "✍️", label: "Content Creator" },
-                      { role: "visual", icon: "🎨", label: "Visual Director" },
-                      { role: "video", icon: "🎥", label: "Video Director" },
-                    ].map((a) => (
-                      <div key={a.role} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                        <span style={{ fontSize: 14, width: 18 }}>{a.icon}</span>
-                        <span style={{ flex: 1, fontSize: 11, color: "rgba(220,238,255,.75)" }}>{a.label}</span>
-                        <select
-                          value={agentVoices[a.role] || ""}
-                          onChange={(e) => updateAgentVoice(a.role, e.target.value)}
-                          style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 6, padding: "4px 6px", color: "#E8F1FF", fontSize: 11, outline: "none", fontFamily: "inherit", width: 100 }}
-                        >
-                          <option value="alloy">Alloy</option>
-                          <option value="echo">Echo (m)</option>
-                          <option value="fable">Fable</option>
-                          <option value="onyx">Onyx (m+)</option>
-                          <option value="nova">Nova (v)</option>
-                          <option value="shimmer">Shimmer (v)</option>
-                          <option value="ash">Ash</option>
-                          <option value="sage">Sage</option>
-                          <option value="coral">Coral (v)</option>
-                        </select>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(56,230,255,.12)" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: "rgba(220,238,255,.85)" }}>Microfoon altijd aan</span>
-                  <button
-                    onClick={toggleAlwaysListen}
-                    disabled={!micSupported}
-                    style={{
-                      border: "none", borderRadius: 6, padding: "4px 10px",
-                      background: alwaysListen ? "rgba(29,158,117,.2)" : "rgba(127,119,221,.15)",
-                      color: alwaysListen ? "#5DCAA5" : "#B3ADEE",
-                      fontSize: 11, fontWeight: 600,
-                      cursor: micSupported ? "pointer" : "not-allowed",
-                      opacity: micSupported ? 1 : 0.5,
-                    }}
-                  >{alwaysListen ? "🎙 aan" : "🎙 uit"}</button>
-                </div>
-                <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", lineHeight: 1.4 }}>
-                  {alwaysListen
-                    ? "Ik luister continu. Gebruik de mic-knop bij de chat om te dempen."
-                    : "Microfoon staat altijd aan, ik reageer alleen op stem. Tik de knop om aan te zetten."}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-        {storageInfo && (
-          <button
-            onClick={() => setShowStorageInfo(true)}
-            title={storageInfo.persistent ? `Opslag: ${storageInfo.type} - werkt` : "Opslag werkt niet - klik voor details"}
-            style={{ width: 36, height: 36, borderRadius: "50%", border: `1px solid ${storageInfo.persistent ? "#5DCAA555" : "#FF8FA3"}`, background: storageInfo.persistent ? "rgba(29,158,117,.08)" : "rgba(255,107,138,.12)", color: storageInfo.persistent ? "#5DCAA5" : "#FF8FA3", cursor: "pointer", fontSize: 14, marginRight: 6 }}
-          >{storageInfo.persistent ? "💾" : "⚠️"}</button>
-        )}
         <button
-          onClick={toggleNotifications}
-          title={notifEnabled ? "Notificaties staan aan - klik om uit te zetten" : "Notificaties aanzetten voor nieuwe mail en WhatsApp"}
-          style={{ width: 36, height: 36, borderRadius: "50%", border: `1px solid ${notifEnabled ? AMBER : "rgba(56,230,255,.3)"}`, background: notifEnabled ? "rgba(239,159,39,.12)" : "transparent", color: notifEnabled ? AMBER : "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14, marginRight: 6 }}
-        >{notifEnabled ? "🔔" : "🔕"}</button>
-        <button onClick={onLogout} title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>⏻</button>
+          onClick={() => setShowSettings(true)}
+          aria-label="Instellingen"
+          title="Instellingen"
+          style={{ width: 36, height: 36, borderRadius: "50%", border: `1px solid ${(storageInfo && !storageInfo.persistent) ? "#FF8FA3" : "rgba(56,230,255,.3)"}`, background: (storageInfo && !storageInfo.persistent) ? "rgba(255,107,138,.1)" : "transparent", color: (storageInfo && !storageInfo.persistent) ? "#FF8FA3" : "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 16, position: "relative" }}
+        >
+          ⚙
+          {(storageInfo && !storageInfo.persistent) && (
+            <span style={{ position: "absolute", top: -2, right: -2, width: 8, height: 8, borderRadius: "50%", background: "#FF8FA3", boxShadow: "0 0 6px #FF8FA3" }} />
+          )}
+        </button>
+        <button onClick={onLogout} aria-label="Uitloggen" title="Uitloggen" style={{ width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(56,230,255,.3)", background: "transparent", color: "rgba(180,210,255,.6)", cursor: "pointer", fontSize: 14 }}>⏻</button>
       </header>
 
       <div className="nova-main-flex" style={{ flex: 1, display: "flex", flexWrap: "wrap", position: "relative", zIndex: 2 }}>
@@ -2661,12 +2527,6 @@ function Nova({ token, onLogout }) {
                 transition: "background .15s ease",
               }}
             >{alwaysListen ? (micMuted ? "🔇" : "🎙") : (listening ? "■" : "🎙")}</button>
-            <button
-              onClick={runMicDiagnose}
-              aria-label="Mic-diagnose"
-              title="Test de microfoon-keten stap voor stap"
-              style={{ width: 28, height: 28, borderRadius: "50%", border: "1px solid rgba(180,210,255,.25)", background: "transparent", color: "rgba(180,210,255,.55)", cursor: "pointer", fontSize: 13, flexShrink: 0, padding: 0 }}
-            >ⓘ</button>
             <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMessage()} placeholder="Praat met NOVA of typ een opdracht..." style={{ flex: 1, background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 22, padding: "10px 15px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
             <button onClick={() => sendMessage()} disabled={busy} aria-label="Versturen" style={{ width: 40, height: 40, borderRadius: "50%", border: "none", background: `linear-gradient(135deg, ${CYAN}, ${PURPLE})`, color: "#04122B", cursor: busy ? "not-allowed" : "pointer", fontSize: 17, flexShrink: 0, opacity: busy ? 0.5 : 1, fontWeight: 700 }}>↑</button>
           </div>
@@ -3718,6 +3578,210 @@ function Nova({ token, onLogout }) {
           </div>
         </div>
       )}
+      {showSettings && (
+        <div onClick={() => setShowSettings(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${CYAN}33` }}>
+              <span style={{ fontSize: 22 }}>⚙</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Instellingen</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Stem, microfoon, meldingen en opslag</div>
+              </div>
+              <button onClick={() => setShowSettings(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px" }}>×</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+
+              {/* GELUID */}
+              <div style={{ marginBottom: 22 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 16 }}>🔊</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: ".5px" }}>Geluid</span>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, padding: "10px 12px", background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.15)", borderRadius: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", fontWeight: 500 }}>NOVA spreekt</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2 }}>Antwoorden hardop voorgelezen</div>
+                  </div>
+                  <button onClick={toggleVoice} style={{ border: "none", borderRadius: 8, padding: "6px 14px", background: voiceOn ? "rgba(29,158,117,.25)" : "rgba(255,107,138,.15)", color: voiceOn ? "#5DCAA5" : "#FF8FA3", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{voiceOn ? "AAN" : "UIT"}</button>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 8 }}>Spraaktempo</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>traag</span>
+                    <input
+                      type="range" min="0.7" max="1.5" step="0.05" value={voiceRate}
+                      onChange={(e) => updateVoiceRate(parseFloat(e.target.value))}
+                      onMouseUp={(e) => testVoice(parseFloat(e.target.value))}
+                      onTouchEnd={(e) => testVoice(parseFloat(e.target.value))}
+                      style={{ flex: 1, accentColor: CYAN, cursor: "pointer" }}
+                    />
+                    <span style={{ fontSize: 10, color: "rgba(180,210,255,.5)" }}>snel</span>
+                    <span style={{ fontSize: 11, color: CYAN, fontWeight: 600, minWidth: 36, textAlign: "right" }}>{voiceRate.toFixed(2)}×</span>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 8 }}>Bron</div>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                    <button
+                      onClick={() => updateTtsProvider("browser")}
+                      style={{ flex: 1, border: "none", borderRadius: 8, padding: "8px 10px", background: ttsProvider === "browser" ? `linear-gradient(135deg, ${CYAN}, ${PURPLE})` : "rgba(255,255,255,.05)", color: ttsProvider === "browser" ? "#04122B" : "rgba(180,210,255,.6)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                    >Browser (gratis)</button>
+                    <button
+                      onClick={() => updateTtsProvider("openai")}
+                      style={{ flex: 1, border: "none", borderRadius: 8, padding: "8px 10px", background: ttsProvider === "openai" ? `linear-gradient(135deg, ${CYAN}, ${PURPLE})` : "rgba(255,255,255,.05)", color: ttsProvider === "openai" ? "#04122B" : "rgba(180,210,255,.6)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                    >OpenAI (cent)</button>
+                  </div>
+                  <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", lineHeight: 1.4 }}>
+                    {ttsProvider === "openai"
+                      ? "Consistent geluid over alle apparaten. ~1,5 cent per 1000 karakters."
+                      : "Gratis browser-stem. Klinkt anders per apparaat."}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 8 }}>Stem</div>
+                  {ttsProvider === "openai" ? (
+                    <select
+                      value={voiceName || "nova"}
+                      onChange={(e) => { updateVoiceName(e.target.value); }}
+                      style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "9px 12px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    >
+                      <option value="alloy">Alloy — neutraal</option>
+                      <option value="echo">Echo — mannelijk, helder</option>
+                      <option value="fable">Fable — warm verteller</option>
+                      <option value="onyx">Onyx — diep mannelijk</option>
+                      <option value="nova">Nova — vriendelijk vrouwelijk</option>
+                      <option value="shimmer">Shimmer — zacht vrouwelijk</option>
+                      <option value="ash">Ash — kalm helder</option>
+                      <option value="sage">Sage — bedachtzaam</option>
+                      <option value="coral">Coral — warm vrouwelijk</option>
+                    </select>
+                  ) : (
+                    <select
+                      value={voiceName}
+                      onChange={(e) => updateVoiceName(e.target.value)}
+                      style={{ width: "100%", background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "9px 12px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    >
+                      <option value="">Automatisch (beste beschikbaar)</option>
+                      {availableVoices.map((v) => (<option key={v.name} value={v.name}>{v.name}</option>))}
+                    </select>
+                  )}
+                </div>
+
+                {ttsProvider === "openai" && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 4 }}>Stemmen per agent</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.45)", lineHeight: 1.4, marginBottom: 10 }}>Geef elke agent een eigen stem voor de voorlees-knop op detailpanelen.</div>
+                    {[
+                      { role: "marketing", icon: "📣", label: "Marketing Director" },
+                      { role: "content", icon: "✍️", label: "Content Creator" },
+                      { role: "visual", icon: "🎨", label: "Visual Director" },
+                      { role: "video", icon: "🎥", label: "Video Director" },
+                    ].map((a) => (
+                      <div key={a.role} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 14, width: 18 }}>{a.icon}</span>
+                        <span style={{ flex: 1, fontSize: 12, color: "rgba(220,238,255,.8)" }}>{a.label}</span>
+                        <select
+                          value={agentVoices[a.role] || ""}
+                          onChange={(e) => updateAgentVoice(a.role, e.target.value)}
+                          style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 6, padding: "5px 8px", color: "#E8F1FF", fontSize: 11, outline: "none", fontFamily: "inherit", width: 110 }}
+                        >
+                          <option value="alloy">Alloy</option>
+                          <option value="echo">Echo (m)</option>
+                          <option value="fable">Fable</option>
+                          <option value="onyx">Onyx (m+)</option>
+                          <option value="nova">Nova (v)</option>
+                          <option value="shimmer">Shimmer (v)</option>
+                          <option value="ash">Ash</option>
+                          <option value="sage">Sage</option>
+                          <option value="coral">Coral (v)</option>
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* MICROFOON */}
+              <div style={{ marginBottom: 22, paddingTop: 18, borderTop: "1px solid rgba(56,230,255,.1)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 16 }}>🎙</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: ".5px" }}>Microfoon</span>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, padding: "10px 12px", background: "rgba(127,119,221,.05)", border: "1px solid rgba(127,119,221,.2)", borderRadius: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", fontWeight: 500 }}>Continu luisteren</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2 }}>{alwaysListen ? "Microfoon staat altijd aan" : "Push-to-talk via mic-knop"}</div>
+                  </div>
+                  <button
+                    onClick={toggleAlwaysListen}
+                    disabled={!micSupported}
+                    style={{ border: "none", borderRadius: 8, padding: "6px 14px", background: alwaysListen ? "rgba(29,158,117,.25)" : "rgba(127,119,221,.2)", color: alwaysListen ? "#5DCAA5" : "#B3ADEE", fontSize: 12, fontWeight: 700, cursor: micSupported ? "pointer" : "not-allowed", opacity: micSupported ? 1 : 0.5 }}
+                  >{alwaysListen ? "AAN" : "UIT"}</button>
+                </div>
+
+                <button
+                  onClick={() => { setShowSettings(false); runMicDiagnose(); }}
+                  style={{ width: "100%", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "10px 12px", background: "rgba(56,230,255,.05)", color: CYAN, fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10 }}
+                >
+                  <span style={{ fontSize: 14 }}>🔍</span>
+                  <div style={{ flex: 1 }}>
+                    <div>Microfoon-diagnose</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2, fontWeight: 400 }}>Test stap voor stap waar het stopt</div>
+                  </div>
+                  <span style={{ fontSize: 14, color: "rgba(180,210,255,.5)" }}>›</span>
+                </button>
+              </div>
+
+              {/* MELDINGEN */}
+              <div style={{ marginBottom: 22, paddingTop: 18, borderTop: "1px solid rgba(56,230,255,.1)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 16 }}>🔔</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: ".5px" }}>Meldingen</span>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "rgba(239,159,39,.05)", border: "1px solid rgba(239,159,39,.2)", borderRadius: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: "#E8F1FF", fontWeight: 500 }}>Browser-notificaties</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2 }}>Bij nieuwe mail of WhatsApp-bericht</div>
+                  </div>
+                  <button
+                    onClick={toggleNotifications}
+                    style={{ border: "none", borderRadius: 8, padding: "6px 14px", background: notifEnabled ? "rgba(29,158,117,.25)" : "rgba(255,107,138,.15)", color: notifEnabled ? "#5DCAA5" : "#FF8FA3", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                  >{notifEnabled ? "AAN" : "UIT"}</button>
+                </div>
+              </div>
+
+              {/* OPSLAG */}
+              {storageInfo && (
+                <div style={{ paddingTop: 18, borderTop: "1px solid rgba(56,230,255,.1)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <span style={{ fontSize: 16 }}>{storageInfo.persistent ? "💾" : "⚠️"}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: ".5px" }}>Opslag</span>
+                  </div>
+
+                  <button
+                    onClick={() => { setShowSettings(false); setShowStorageInfo(true); }}
+                    style={{ width: "100%", border: `1px solid ${storageInfo.persistent ? "rgba(29,158,117,.3)" : "rgba(255,143,163,.4)"}`, borderRadius: 8, padding: "10px 12px", background: storageInfo.persistent ? "rgba(29,158,117,.05)" : "rgba(255,107,138,.08)", color: storageInfo.persistent ? "#5DCAA5" : "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div>{storageInfo.persistent ? `Persistent (${storageInfo.type})` : "Niet persistent — data gaat verloren"}</div>
+                      <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2, fontWeight: 400 }}>{storageInfo.persistent ? "Verbeterpunten en data blijven bewaard" : "Klik voor instructies om Redis te koppelen"}</div>
+                    </div>
+                    <span style={{ fontSize: 14, color: "rgba(180,210,255,.5)" }}>›</span>
+                  </button>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>
+      )}
+
       {showMicDiag && (
         <div onClick={() => setShowMicDiag(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
