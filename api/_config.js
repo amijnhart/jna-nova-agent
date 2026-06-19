@@ -155,6 +155,67 @@ export const KEYS = {
   whatsappInbox: "nova_whatsapp_inbox",
 };
 
+// Vertelt eerlijk welke opslag op dit moment actief is.
+// Probeert ook daadwerkelijk te schrijven en lezen om te bewijzen dat het werkt,
+// zodat we niet alleen op env-variables vertrouwen maar ook op echte connectie.
+export async function storageStatus() {
+  const result = {
+    type: "memory",
+    persistent: false,
+    redisConfigured: hasRedisUrl(),
+    kvConfigured: hasKV(),
+    healthy: false,
+    error: null,
+  };
+
+  if (hasRedisUrl()) {
+    result.type = "redis";
+    try {
+      const c = await getRedis();
+      if (c) {
+        const testKey = "nova_health_check";
+        const stamp = Date.now().toString();
+        await c.set(testKey, stamp);
+        const got = await c.get(testKey);
+        if (got === stamp) {
+          result.persistent = true;
+          result.healthy = true;
+        } else {
+          result.error = "Schrijf-lees test mislukte";
+        }
+      } else {
+        result.error = "Redis client kon niet verbinden";
+      }
+    } catch (err) {
+      result.error = "Redis fout: " + err.message;
+    }
+    return result;
+  }
+
+  if (hasKV()) {
+    result.type = "kv";
+    try {
+      const testKey = "nova_health_check";
+      const stamp = Date.now().toString();
+      await kvSet(testKey, stamp);
+      const got = await kvGet(testKey);
+      if (got === stamp) {
+        result.persistent = true;
+        result.healthy = true;
+      } else {
+        result.error = "Schrijf-lees test mislukte";
+      }
+    } catch (err) {
+      result.error = "KV fout: " + err.message;
+    }
+    return result;
+  }
+
+  // Geen opslag geconfigureerd
+  result.error = "Geen REDIS_URL of KV_REST_API_URL ingesteld in Vercel - data verdwijnt bij elke serverless restart";
+  return result;
+}
+
 // Lijst alle KV-keys op die bij deze app horen. Wordt gebruikt door de
 // backup-functie om alle data in een keer te exporteren.
 export async function listAllKeys() {
