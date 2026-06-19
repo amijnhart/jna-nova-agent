@@ -1605,21 +1605,45 @@ function Nova({ token, onLogout }) {
       }).then(async (r) => {
         if (!r.ok) {
           const err = await r.json().catch(() => ({}));
-          console.warn("TTS via OpenAI mislukt, val terug op browser:", err.error);
+          // Toon de fout EEN keer per sessie in de chat zodat de gebruiker weet wat er gebeurt
+          if (!window._novaTtsErrorShown) {
+            window._novaTtsErrorShown = true;
+            const detail = err.error || "onbekende fout";
+            setMessages((m) => [...m, { role: "assistant", content: `⚠️ OpenAI-stem niet beschikbaar (${detail}). Ik val terug op de browser-stem. Check of OPENAI_API_KEY in Vercel staat en of api/tts.js is gedeployd.` }]);
+          }
+          console.warn("TTS via OpenAI mislukt:", err.error);
           setSpeaking(false);
           speakBrowser(clean, role);
           return;
         }
         const blob = await r.blob();
+        // Sanity-check: een audio-blob hoort minimaal een paar KB te zijn
+        if (blob.size < 200) {
+          if (!window._novaTtsErrorShown) {
+            window._novaTtsErrorShown = true;
+            setMessages((m) => [...m, { role: "assistant", content: "⚠️ OpenAI gaf een lege audio-respons. Val terug op browser-stem." }]);
+          }
+          setSpeaking(false);
+          speakBrowser(clean, role);
+          return;
+        }
         const url = URL.createObjectURL(blob);
         const audio = ttsAudioRef.current;
         audio.src = url;
         audio.playbackRate = voiceRate;
         audio.onended = () => { setSpeaking(false); URL.revokeObjectURL(url); };
         audio.onerror = () => { setSpeaking(false); URL.revokeObjectURL(url); };
-        audio.play().catch(() => setSpeaking(false));
+        audio.play().catch((e) => {
+          console.warn("Audio play mislukte:", e.message);
+          setSpeaking(false);
+          // Niet als fout tonen want dit gebeurt soms door autoplay-restricties
+        });
       }).catch((e) => {
-        console.warn("TTS netwerkfout, val terug op browser:", e.message);
+        if (!window._novaTtsErrorShown) {
+          window._novaTtsErrorShown = true;
+          setMessages((m) => [...m, { role: "assistant", content: `⚠️ Netwerkfout bij OpenAI-stem (${e.message}). Val terug op browser-stem.` }]);
+        }
+        console.warn("TTS netwerkfout:", e.message);
         setSpeaking(false);
         speakBrowser(clean, role);
       });
