@@ -52,7 +52,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { messages, mode, integrations, voiceRate, emails, boeksy } = req.body;
+    const { messages, mode, integrations, voiceRate, emails, boeksy, lastViewed } = req.body;
     if (!Array.isArray(messages)) {
       return res.status(400).json({ error: "messages ontbreekt" });
     }
@@ -115,8 +115,13 @@ export default async function handler(req, res) {
         blok += `\n\nOffertes die mogelijk follow-up nodig hebben (open, ouder dan 14 dagen):\n` + boeksy.followUps.slice(0, 10).map((f) => `- offerte ${f.number || "concept"} aan ${f.klant} voor ${f.subject} - ${f.daysOpen} dagen oud${f.total ? ", € " + f.total : ""}`).join("\n");
         blok += `\n\nALs de gebruiker hierover vraagt, signaleer welke offertes het oudst zijn. Stel NIET voor om automatisch te mailen - Boeksy heeft daar een eigen functie voor. Als hij vraagt om een follow-up tekst, help dan met een conceptmail die hij zelf kan versturen via Boeksy of zijn mailprogramma.`;
       }
-      blok += "\n\nBELANGRIJK: het AANMAKEN van facturen of offertes is nog niet geactiveerd. Als de gebruiker daarom vraagt, leg uit dat je het kunt opstellen als concept maar dat de schrijf-actie nog niet geactiveerd is en dat we die in een volgende stap toevoegen.";
+      blok += "\n\nJe KUNT nu ook offertes en facturen aanmaken als concept in Boeksy via een goedkeur-flow. Wanneer de gebruiker vraagt om een offerte te maken, geef in je antwoord op een aparte regel: OFFERTE: relation_naam | onderwerp | event_datum YYYY-MM-DD (of leeg) | omschrijving1@aantal@prijs@btw% | omschrijving2@aantal@prijs@btw% (regels gescheiden door %%). Voorbeeld: 'OFFERTE: Acme BV | Bruiloft 15 juli | 2026-07-15 | DJ-set 5 uur@5@150@21%%Geluidset huur@1@200@21'. De gebruiker krijgt dan een preview en kan goedkeuren voor het naar Boeksy gaat.";
       system += blok;
+    }
+
+    // Context: wat de gebruiker net heeft bekeken (verbeterpunt P)
+    if (lastViewed && typeof lastViewed === "object") {
+      system += `\n\nDe gebruiker heeft net bekeken: ${lastViewed.type} - ${lastViewed.label}. Verwijzingen als "die offerte" of "die mail" of "dat" mogen op dit item slaan tenzij context anders aangeeft. Detail: ${JSON.stringify(lastViewed.data).slice(0, 500)}`;
     }
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",

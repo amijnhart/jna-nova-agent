@@ -106,13 +106,28 @@ async function handleRelations(req, res) {
   return res.status(200).json({ items });
 }
 
+// Filter weg: geannuleerde, verwijderde, of voltooid/betaalde items zonder relevantie.
+// We willen ALLEEN actuele items zien in het overzicht. De backend van Boeksy houdt
+// soms ook archief-items in een lijst, die zijn niet relevant voor dagelijks zicht.
+function isActueel(item) {
+  const status = (item.status || "").toLowerCase();
+  // Verberg alles wat geannuleerd, verwijderd, archief, of expliciet afgesloten is.
+  // De business-logica: dit zijn items waar geen actie meer op nodig is.
+  const verbergen = [
+    "cancelled", "canceled", "deleted", "archived", "voided", "void",
+    "geannuleerd", "verwijderd", "gearchiveerd", "vervallen",
+  ];
+  if (verbergen.some((v) => status.includes(v))) return false;
+  return true;
+}
+
 async function handleInvoices(req, res) {
   const data = await boeksyFetch("/v1/invoices?limit=50");
-  const items = (data.data || []).map((inv) => ({
+  const items = (data.data || []).filter(isActueel).map((inv) => ({
     id: inv.id,
     number: inv.number || inv.invoice_number || null,
     date: inv.invoice_date,
-    event_date: inv.event_date || null,   // datum dat de werkzaamheden plaatsvinden
+    event_date: inv.event_date || null,
     subject: inv.subject,
     total: inv.total || inv.total_amount || null,
     status: inv.status,
@@ -123,11 +138,11 @@ async function handleInvoices(req, res) {
 
 async function handleQuotes(req, res) {
   const data = await boeksyFetch("/v1/quotes?limit=50");
-  const items = (data.data || []).map((q) => ({
+  const items = (data.data || []).filter(isActueel).map((q) => ({
     id: q.id,
     number: q.number || q.quote_number || null,
     date: q.quote_date || q.date,
-    event_date: q.event_date || null,   // datum dat de werkzaamheden plaatsvinden
+    event_date: q.event_date || null,
     subject: q.subject,
     total: q.total || q.total_amount || null,
     status: q.status,
@@ -137,14 +152,29 @@ async function handleQuotes(req, res) {
 }
 
 async function handleProfitLoss(req, res) {
-  // Lopend kwartaal: bereken from/to op basis van vandaag
+  // Lopend kwartaal: bereken from/to op basis van vandaag.
+  // Geeft ook vorig kwartaal mee voor vergelijking (verbeterpunt F).
   const now = new Date();
   const quarter = Math.floor(now.getMonth() / 3);
   const fromMonth = quarter * 3;
   const from = new Date(now.getFullYear(), fromMonth, 1).toISOString().slice(0, 10);
   const to = now.toISOString().slice(0, 10);
-  const data = await boeksyFetch(`/v1/reports/profit-loss?from=${from}&to=${to}`);
-  return res.status(200).json({ from, to, report: data.data || data });
+  // Vorig kwartaal: 3 maanden terug
+  const prevFromMonth = fromMonth - 3;
+  const prevYear = prevFromMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
+  const prevFromMonthAdj = (prevFromMonth + 12) % 12;
+  const prevFrom = new Date(prevYear, prevFromMonthAdj, 1).toISOString().slice(0, 10);
+  const prevTo = new Date(prevYear, prevFromMonthAdj + 3, 0).toISOString().slice(0, 10);
+
+  const [current, previous] = await Promise.allSettled([
+    boeksyFetch(`/v1/reports/profit-loss?from=${from}&to=${to}`),
+    boeksyFetch(`/v1/reports/profit-loss?from=${prevFrom}&to=${prevTo}`),
+  ]);
+  return res.status(200).json({
+    from, to,
+    report: current.status === "fulfilled" ? (current.value.data || current.value) : null,
+    previous: previous.status === "fulfilled" ? { from: prevFrom, to: prevTo, report: previous.value.data || previous.value } : null,
+  });
 }
 
 // Samengevat overzicht: alle belangrijke nummers in één call zodat NOVA's
@@ -153,18 +183,23 @@ async function handleOverview(req, res) {
   const result = { configured: !!getApiKey() };
   if (!result.configured) return res.status(200).json(result);
 
+  const now = new Date();
+  const q = Math.floor(now.getMonth() / 3);
+  const from = new Date(now.getFullYear(), q * 3, 1).toISOString().slice(0, 10);
+  const to = now.toISOString().slice(0, 10);
+  const prevFromMonth = q * 3 - 3;
+  const prevYear = prevFromMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
+  const prevFromMonthAdj = (prevFromMonth + 12) % 12;
+  const prevFrom = new Date(prevYear, prevFromMonthAdj, 1).toISOString().slice(0, 10);
+  const prevTo = new Date(prevYear, prevFromMonthAdj + 3, 0).toISOString().slice(0, 10);
+
   // Parallel ophalen voor snelheid; één faalt mag de rest niet stoppen
-  const [relations, invoices, quotes, pl] = await Promise.allSettled([
+  const [relations, invoices, quotes, pl, plPrev] = await Promise.allSettled([
     boeksyFetch("/v1/relations?limit=50"),
     boeksyFetch("/v1/invoices?limit=20"),
     boeksyFetch("/v1/quotes?limit=20"),
-    (() => {
-      const now = new Date();
-      const q = Math.floor(now.getMonth() / 3);
-      const from = new Date(now.getFullYear(), q * 3, 1).toISOString().slice(0, 10);
-      const to = now.toISOString().slice(0, 10);
-      return boeksyFetch(`/v1/reports/profit-loss?from=${from}&to=${to}`);
-    })(),
+    boeksyFetch(`/v1/reports/profit-loss?from=${from}&to=${to}`),
+    boeksyFetch(`/v1/reports/profit-loss?from=${prevFrom}&to=${prevTo}`),
   ]);
 
   if (relations.status === "fulfilled") {
@@ -173,7 +208,7 @@ async function handleOverview(req, res) {
     result.relationsError = relations.reason?.message || "fout";
   }
   if (invoices.status === "fulfilled") {
-    result.invoices = (invoices.value.data || []).map((inv) => ({
+    result.invoices = (invoices.value.data || []).filter(isActueel).map((inv) => ({
       id: inv.id, number: inv.number || inv.invoice_number, date: inv.invoice_date,
       event_date: inv.event_date || null,
       subject: inv.subject,
@@ -183,7 +218,7 @@ async function handleOverview(req, res) {
     result.invoicesError = invoices.reason?.message || "fout";
   }
   if (quotes.status === "fulfilled") {
-    result.quotes = (quotes.value.data || []).map((q) => ({
+    result.quotes = (quotes.value.data || []).filter(isActueel).map((q) => ({
       id: q.id, number: q.number || q.quote_number, date: q.quote_date || q.date,
       event_date: q.event_date || null,
       subject: q.subject,
@@ -194,8 +229,13 @@ async function handleOverview(req, res) {
   }
   if (pl.status === "fulfilled") {
     result.profitLoss = pl.value.data || pl.value;
+    result.profitLossPeriod = { from, to };
   } else {
     result.profitLossError = pl.reason?.message || "fout";
+  }
+  if (plPrev.status === "fulfilled") {
+    result.profitLossPrev = plPrev.value.data || plPrev.value;
+    result.profitLossPrevPeriod = { from: prevFrom, to: prevTo };
   }
 
   // EVENTS: alle offertes en facturen met event_date in de toekomst (of recent verleden)
@@ -272,6 +312,56 @@ async function handleOverview(req, res) {
   return res.status(200).json(result);
 }
 
+// --- POST handlers: schrijven naar Boeksy ---
+
+// POST /v1/quotes - offerte als concept aanmaken.
+// Verwacht body: { relation_id, subject, event_date?, lines: [{description, quantity, unit_price, vat_rate}] }
+// Boeksy maakt het automatisch als concept aan zonder het te versturen.
+async function handleCreateQuote(req, res) {
+  const key = getApiKey();
+  if (!key) return res.status(503).json({ error: "Boeksy niet geconfigureerd" });
+  const body = req.body;
+  if (!body || !body.lines || !Array.isArray(body.lines) || body.lines.length === 0) {
+    return res.status(400).json({ error: "lines verplicht" });
+  }
+  const url = BASE_URL + "/v1/quotes";
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let msg = "";
+    try { const j = await r.json(); msg = j.error?.message || j.message || ""; } catch { msg = r.statusText; }
+    return res.status(r.status).json({ error: msg || "Aanmaken offerte mislukt" });
+  }
+  const result = await r.json();
+  return res.status(200).json({ ok: true, quote: result.data || result });
+}
+
+// POST /v1/invoices - factuur als concept aanmaken.
+async function handleCreateInvoice(req, res) {
+  const key = getApiKey();
+  if (!key) return res.status(503).json({ error: "Boeksy niet geconfigureerd" });
+  const body = req.body;
+  if (!body || !body.lines || !Array.isArray(body.lines) || body.lines.length === 0) {
+    return res.status(400).json({ error: "lines verplicht" });
+  }
+  const url = BASE_URL + "/v1/invoices";
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let msg = "";
+    try { const j = await r.json(); msg = j.error?.message || j.message || ""; } catch { msg = r.statusText; }
+    return res.status(r.status).json({ error: msg || "Aanmaken factuur mislukt" });
+  }
+  const result = await r.json();
+  return res.status(200).json({ ok: true, invoice: result.data || result });
+}
+
 // --- ROUTER ---
 
 export default async function handler(req, res) {
@@ -279,17 +369,28 @@ export default async function handler(req, res) {
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!verifyToken(token)) return res.status(401).json({ error: "Niet ingelogd." });
 
-  if (req.method !== "GET") return res.status(405).json({ error: "Alleen GET toegestaan" });
-
   try {
     const action = req.query.action || "status";
-    if (action === "status") return await handleStatus(req, res);
-    if (action === "relations") return await handleRelations(req, res);
-    if (action === "invoices") return await handleInvoices(req, res);
-    if (action === "quotes") return await handleQuotes(req, res);
-    if (action === "profit-loss") return await handleProfitLoss(req, res);
-    if (action === "overview") return await handleOverview(req, res);
-    return res.status(400).json({ error: "Onbekende action. Beschikbaar: status, relations, invoices, quotes, profit-loss, overview." });
+
+    // GET-acties
+    if (req.method === "GET") {
+      if (action === "status") return await handleStatus(req, res);
+      if (action === "relations") return await handleRelations(req, res);
+      if (action === "invoices") return await handleInvoices(req, res);
+      if (action === "quotes") return await handleQuotes(req, res);
+      if (action === "profit-loss") return await handleProfitLoss(req, res);
+      if (action === "overview") return await handleOverview(req, res);
+      return res.status(400).json({ error: "Onbekende GET-action" });
+    }
+
+    // POST-acties (schrijven)
+    if (req.method === "POST") {
+      if (action === "create-quote") return await handleCreateQuote(req, res);
+      if (action === "create-invoice") return await handleCreateInvoice(req, res);
+      return res.status(400).json({ error: "Onbekende POST-action" });
+    }
+
+    return res.status(405).json({ error: "Methode niet toegestaan" });
   } catch (err) {
     console.error("Boeksy-fout:", err.message);
     return res.status(500).json({ error: err.message });
