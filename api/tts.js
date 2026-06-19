@@ -41,6 +41,9 @@ export default async function handler(req, res) {
         voice,             // alloy, echo, fable, onyx, nova, shimmer, ash, sage, coral
         input: safeText,
         response_format: "mp3",
+        // Speed 1.1 = iets sneller dan natuurlijk. Op mobiel voelt dat reactiever
+        // en het verhoogt het tempo dus minder lange wachttijd.
+        speed: 1.1,
       }),
     });
 
