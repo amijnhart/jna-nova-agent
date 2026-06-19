@@ -555,6 +555,9 @@ function Nova({ token, onLogout }) {
   // Refs voor het detecteren van nieuwe mails/WhatsApps - alleen NIEUWE items melden
   const seenMailIdsRef = useRef(new Set());
   const seenWAIdsRef = useRef(new Set());
+  // Diagnose-info over de opslag - laat zien of we Redis/KV/geheugen gebruiken
+  const [storageInfo, setStorageInfo] = useState(null);
+  const [showStorageInfo, setShowStorageInfo] = useState(false);
   // Stemmen per agent-rol (verbeterpunt M). Default-keuzes komen uit OpenAI's stemmen.
   // Marketing = autoritaire mannelijke stem (onyx); Content = vrolijke vrouwelijke (nova);
   // Visual = warme verteller (fable); Video = bedachtzaam (sage).
@@ -672,7 +675,7 @@ function Nova({ token, onLogout }) {
       };
 
       // Alle data parallel ophalen. Scheelt 2-3 seconden bij login op trage verbindingen.
-      const [d1, d2, d3, d4, d5, d6, dB, dWA] = await Promise.all([
+      const [d1, d2, d3, d4, d5, d6, dB, dWA, dStorage] = await Promise.all([
         safeFetch(IMPROVE_URL),
         safeFetch(INBOX_URL),
         safeFetch(CATALOG_URL),
@@ -681,6 +684,7 @@ function Nova({ token, onLogout }) {
         safeFetch("/api/mail?action=settings"),
         safeFetch(BOEKSY_URL),
         safeFetch("/api/whatsapp?action=inbox"),
+        safeFetch("/api/data?type=storage"),
       ]);
 
       let imps = [];
@@ -688,6 +692,7 @@ function Nova({ token, onLogout }) {
       let liveIntegrations = {};
       let waInbox = [];
 
+      if (dStorage) setStorageInfo(dStorage);
       if (d1 && Array.isArray(d1.items)) { imps = d1.items; setImprovements(d1.items); }
       if (d2) { inbox = d2; if (inbox.connected && Array.isArray(inbox.emails)) setEmails(inbox.emails); }
       if (d3 && Array.isArray(d3.items)) setCatalog(d3.items);
@@ -772,6 +777,14 @@ function Nova({ token, onLogout }) {
       // Toon de begroeting als bericht in de chat en spreek hem uit.
       setMessages((p) => [...p, { role: "assistant", content: tekst }]);
       speak(tekst);
+
+      // Als de opslag niet persistent is, waarschuw expliciet zodat de gebruiker
+      // weet dat data verloren gaat. Vandaag is gebleken dat NOVA dit "wist" maar
+      // niet liet zien.
+      if (dStorage && !dStorage.persistent) {
+        const probleem = dStorage.error || "geen REDIS_URL of KV_REST_API_URL ingesteld";
+        setMessages((p) => [...p, { role: "assistant", content: `⚠️ Let op: de opslag is op dit moment niet persistent. ${probleem}. Verbeterpunten, kalender-items en catalogus blijven niet bewaard tussen sessies. Klik op het 💾-icoon in de header voor details over hoe dit op te lossen.` }]);
+      }
 
       // Zet relevante acties rond de cirkel (zonder bestaande te verwijderen).
       const acts = [];
@@ -2217,6 +2230,13 @@ function Nova({ token, onLogout }) {
             </div>
           )}
         </div>
+        {storageInfo && (
+          <button
+            onClick={() => setShowStorageInfo(true)}
+            title={storageInfo.persistent ? `Opslag: ${storageInfo.type} - werkt` : "Opslag werkt niet - klik voor details"}
+            style={{ width: 36, height: 36, borderRadius: "50%", border: `1px solid ${storageInfo.persistent ? "#5DCAA555" : "#FF8FA3"}`, background: storageInfo.persistent ? "rgba(29,158,117,.08)" : "rgba(255,107,138,.12)", color: storageInfo.persistent ? "#5DCAA5" : "#FF8FA3", cursor: "pointer", fontSize: 14, marginRight: 6 }}
+          >{storageInfo.persistent ? "💾" : "⚠️"}</button>
+        )}
         <button
           onClick={toggleNotifications}
           title={notifEnabled ? "Notificaties staan aan - klik om uit te zetten" : "Notificaties aanzetten voor nieuwe mail en WhatsApp"}
@@ -3521,6 +3541,86 @@ function Nova({ token, onLogout }) {
           </div>
         </div>
       )}
+      {showStorageInfo && storageInfo && (
+        <div onClick={() => setShowStorageInfo(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 29, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${storageInfo.persistent ? "#5DCAA555" : "#FF8FA3"}`, borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${storageInfo.persistent ? "rgba(29,158,117,.2)" : "rgba(255,143,163,.2)"}` }}>
+              <span style={{ fontSize: 22 }}>{storageInfo.persistent ? "💾" : "⚠️"}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Opslag-status</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Waar worden je gegevens bewaard?</div>
+              </div>
+              <button onClick={() => setShowStorageInfo(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px" }}>×</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+              {storageInfo.persistent ? (
+                <div>
+                  <div style={{ padding: "12px 14px", background: "rgba(29,158,117,.08)", border: "1px solid rgba(29,158,117,.3)", borderRadius: 10, marginBottom: 14 }}>
+                    <div style={{ fontSize: 13, color: "#5DCAA5", fontWeight: 700, marginBottom: 4 }}>✓ Persistent gekoppeld</div>
+                    <div style={{ fontSize: 12, color: "rgba(220,238,255,.8)", lineHeight: 1.5 }}>
+                      Type: <strong>{storageInfo.type === "redis" ? "Redis" : storageInfo.type === "kv" ? "Vercel KV" : storageInfo.type}</strong>. Verbeterpunten, contentkalender en catalogus blijven bewaard, ook na herstart van de server.
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", lineHeight: 1.5 }}>
+                    De opslag is succesvol getest: NOVA heeft zojuist een test-waarde geschreven en weer kunnen lezen.
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ padding: "12px 14px", background: "rgba(255,107,138,.08)", border: "1px solid rgba(255,107,138,.3)", borderRadius: 10, marginBottom: 14 }}>
+                    <div style={{ fontSize: 13, color: "#FF8FA3", fontWeight: 700, marginBottom: 4 }}>✗ Niet persistent</div>
+                    <div style={{ fontSize: 12, color: "rgba(220,238,255,.8)", lineHeight: 1.5 }}>
+                      {storageInfo.error || "Geen opslag geconfigureerd"}
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: 12, color: "rgba(220,238,255,.85)", lineHeight: 1.6, marginBottom: 12 }}>
+                    Wat dit betekent: gegevens worden tijdelijk in geheugen bewaard, maar verdwijnen zodra Vercel de serverless-functie opnieuw start (vaak elke paar minuten). Verbeterpunten, kalender-items en catalogus blijven dus niet bewaard tussen sessies.
+                  </div>
+
+                  <div style={{ fontSize: 11, color: CYAN, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8, marginTop: 16 }}>Optie 1: Vercel Marketplace Redis (aanbevolen)</div>
+                  <ol style={{ fontSize: 12, color: "rgba(220,238,255,.85)", lineHeight: 1.7, paddingLeft: 20, margin: 0 }}>
+                    <li>Ga naar je Vercel-project, tabblad <strong>Storage</strong></li>
+                    <li>Klik <strong>"Create Database"</strong> → kies <strong>Marketplace</strong></li>
+                    <li>Kies een Redis-provider (bijv. <strong>Upstash</strong>, gratis tier 10.000 calls/dag)</li>
+                    <li>Klik <strong>Connect</strong> en koppel aan je project (Production scope)</li>
+                    <li>Vercel voegt automatisch <code style={{ background: "rgba(56,230,255,.1)", padding: "1px 5px", borderRadius: 3, color: CYAN }}>REDIS_URL</code> toe als environment-variable</li>
+                    <li>Ga naar tabblad <strong>Deployments</strong>, klik "..." op de laatste deploy → <strong>Redeploy</strong></li>
+                  </ol>
+
+                  <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8, marginTop: 16 }}>Optie 2: bestaande Redis handmatig koppelen</div>
+                  <div style={{ fontSize: 12, color: "rgba(220,238,255,.85)", lineHeight: 1.6 }}>
+                    Als je al een Redis-URL hebt: ga naar Settings → Environment Variables, voeg <code style={{ background: "rgba(239,159,39,.1)", padding: "1px 5px", borderRadius: 3, color: AMBER }}>REDIS_URL</code> toe met je connectiestring (begint meestal met <code>redis://</code> of <code>rediss://</code>). Redeploy daarna.
+                  </div>
+
+                  <div style={{ marginTop: 16, padding: "10px 12px", background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.2)", borderRadius: 8, fontSize: 11, color: "rgba(180,210,255,.75)", lineHeight: 1.5 }}>
+                    <strong style={{ color: CYAN }}>Diagnose:</strong><br/>
+                    REDIS_URL aanwezig: {storageInfo.redisConfigured ? "✓ ja" : "✗ nee"}<br/>
+                    KV_REST_API_URL aanwezig: {storageInfo.kvConfigured ? "✓ ja" : "✗ nee"}<br/>
+                    Type op dit moment: {storageInfo.type}<br/>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,.06)", display: "flex", gap: 8 }}>
+              <button
+                onClick={async () => {
+                  setStorageInfo(null);
+                  try {
+                    const r = await fetch("/api/data?type=storage", { headers: { Authorization: "Bearer " + token } });
+                    const d = await r.json();
+                    setStorageInfo(d);
+                  } catch (e) { void e; }
+                }}
+                style={{ border: "1px solid rgba(56,230,255,.4)", borderRadius: 8, padding: "8px 14px", background: "rgba(56,230,255,.06)", color: CYAN, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+              >🔄 Opnieuw testen</button>
+              <div style={{ flex: 1 }} />
+              <button onClick={() => setShowStorageInfo(false)} style={{ border: "1px solid rgba(180,210,255,.2)", borderRadius: 8, padding: "8px 14px", background: "transparent", color: "rgba(220,238,255,.85)", fontSize: 12, cursor: "pointer" }}>Sluiten</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDashboard && (() => {
         // Vandaag-data
         const today = new Date(); today.setHours(0, 0, 0, 0);
