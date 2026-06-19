@@ -1815,29 +1815,30 @@ function Nova({ token, onLogout }) {
     }
     log.push({ stap: "3. Microfoon-permissie", status: permStatus === "granted" ? "ok" : permStatus === "denied" ? "fout" : "wacht", detail: permStatus, info: permStatus === "denied" ? "Toestemming geweigerd. Ga naar Instellingen > Safari > Microfoon en sta agents.jna-events.nl toe." : null });
 
-    // Stap 4: getUserMedia werkt?
+    // Stap 4: getUserMedia werkt? Met zelfde audio-instellingen als always-listen
+    // omdat iOS Safari spraakherkenning vereist dat de stream actief is.
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       log.push({ stap: "4. getUserMedia", status: "fout", detail: "Niet beschikbaar", info: "Zonder dit kan geen microfoon-toegang worden gevraagd." });
       setMicDiag({ running: false, steps: log });
       return;
     }
-    let streamOK = false;
+    let stream = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
-      streamOK = true;
-      log.push({ stap: "4. Microfoon-toegang", status: "ok", detail: "Stream verkregen en weer vrijgegeven" });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+      log.push({ stap: "4. Microfoon-toegang", status: "ok", detail: "Stream verkregen met ruisonderdrukking" });
     } catch (err) {
       log.push({ stap: "4. Microfoon-toegang", status: "fout", detail: err.name + ": " + err.message, info: err.name === "NotAllowedError" ? "Op iOS: ga naar Instellingen > Safari > Microfoon en sta de site toe. Daarna deze pagina vernieuwen." : null });
       setMicDiag({ running: false, steps: log });
       return;
     }
 
-    // Stap 5: SpeechRecognition kan starten?
-    if (!streamOK) {
-      setMicDiag({ running: false, steps: log });
-      return;
-    }
+    // Stap 5: SpeechRecognition kan starten - MET stream nog open
     log.push({ stap: "5. Test recognizer", status: "wacht", detail: "Aan het proberen..." });
     setMicDiag({ running: true, steps: [...log] });
 
@@ -1851,8 +1852,8 @@ function Nova({ token, onLogout }) {
       const finish = (result) => { if (!resolved) { resolved = true; resolve(result); } };
       testRec.onstart = () => finish({ ok: true, msg: "Recognizer gestart - WERKT" });
       testRec.onerror = (e) => finish({ ok: false, msg: "Recognizer-fout: " + (e.error || "onbekend"), errcode: e.error });
-      testRec.onend = () => finish({ ok: false, msg: "Recognizer stopte direct zonder feedback (typisch iOS Safari probleem)" });
-      setTimeout(() => finish({ ok: false, msg: "Geen reactie binnen 3 seconden - recognizer hangt", errcode: "timeout" }), 3000);
+      testRec.onend = () => finish({ ok: false, msg: "Recognizer stopte direct zonder feedback" });
+      setTimeout(() => finish({ ok: false, msg: "Geen reactie binnen 3 seconden", errcode: "timeout" }), 3000);
       try {
         testRec.start();
       } catch (err) {
@@ -1861,12 +1862,15 @@ function Nova({ token, onLogout }) {
     });
     const result = await promise;
     try { testRec.stop(); } catch (e) { void e; }
+    // NU pas de stream opruimen
+    try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { void e; }
+
     if (result.ok) {
       log[log.length - 1] = { stap: "5. Test recognizer", status: "ok", detail: result.msg, info: "Mic werkt - probeer nu te praten via de mic-knop." };
     } else {
       let info = null;
       if (result.errcode === "network") info = "Spraak wordt naar Apple's servers gestuurd voor analyse, en die verbinding lukt nu niet. Probeer ander netwerk.";
-      else if (result.errcode === "service-not-allowed") info = "iOS Safari heeft spraakherkenning niet toegestaan. Check je iOS versie (14.5+) en herstart Safari.";
+      else if (result.errcode === "service-not-allowed") info = "iOS Safari heeft spraakherkenning niet toegestaan. Mogelijk is dicteren uit in Instellingen > Algemeen > Toetsenbord > Dicteren inschakelen.";
       else if (result.errcode === "not-allowed") info = "Microfoon geweigerd op API-niveau ondanks dat getUserMedia werkte. Vreemd - herstart browser.";
       log[log.length - 1] = { stap: "5. Test recognizer", status: "fout", detail: result.msg, info };
     }
@@ -1901,9 +1905,22 @@ function Nova({ token, onLogout }) {
     }
     // Op mobiel moet getUserMedia ABSOLUUT vanuit een directe gebruikersinteractie
     // worden aangeroepen, anders blokkeert iOS Safari het permanent.
+    //
+    // LES GELEERD: iOS Safari's webkitSpeechRecognition vereist een actieve audio-stream
+    // tijdens recognition. In always-listen modus hielden we de stream open en werkte het.
+    // In push-to-talk sloten we de stream meteen, en kreeg recognition.start() een
+    // 'service-not-allowed' fout omdat er geen actieve audio-input meer was.
+    // Daarom houden we de stream nu open tijdens de herkenning, met dezelfde
+    // echo/noise-onderdrukking als always-listen.
+    let stream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
     } catch (err) {
       const reason = err.name === "NotAllowedError" ? "geweigerd door gebruiker of door browser-instelling" :
                      err.name === "NotFoundError" ? "geen microfoon gevonden op dit apparaat" :
@@ -1911,25 +1928,57 @@ function Nova({ token, onLogout }) {
                      err.name === "OverconstrainedError" ? "microfoon-instelling niet ondersteund" :
                      err.message || "onbekend";
       setStatus("Microfoon-fout: " + reason);
-      setMessages((m) => [...m, { role: "assistant", content: `⚠️ Geen toegang tot microfoon (${reason}). Op iOS: ga naar Instellingen > Safari > Microfoon en sta 'agents.jna-events.nl' toe. Op Android: tik op het hangslot-icoon in de URL-balk en sta de microfoon toe.` }]);
+      setMessages((m) => [...m, { role: "assistant", content: `⚠️ Geen toegang tot microfoon (${reason}). Op iOS: ga naar Instellingen > Safari > Microfoon en sta 'agents.jna-events.nl' toe.` }]);
       return;
     }
+
+    // Stream bewaren in een ref zodat we hem kunnen sluiten nadat herkenning klaar is.
+    // We hergebruiken de micStreamRef die ook door always-listen wordt gebruikt.
+    micStreamRef.current = stream;
 
     // Stop spraak die misschien nog speelt voor we beginnen te luisteren
     stopSpeaking();
     setListening(true);
     setStatus("Luisteren...");
 
+    // Helper om stream op te ruimen wanneer herkenning eindigt
+    const cleanupStream = () => {
+      if (micStreamRef.current === stream) {
+        stream.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
+    };
+
+    // Eenmalige cleanup-listeners die zichzelf weer verwijderen.
+    // We hangen ze BOVENOP de bestaande onresult/onerror/onend uit de useEffect-setup.
+    const rec = recognitionRef.current;
+    const origEnd = rec.onend;
+    const origError = rec.onerror;
+    rec.onend = (e) => {
+      cleanupStream();
+      rec.onend = origEnd;
+      rec.onerror = origError;
+      if (origEnd) origEnd(e);
+    };
+    rec.onerror = (e) => {
+      cleanupStream();
+      rec.onend = origEnd;
+      rec.onerror = origError;
+      if (origError) origError(e);
+    };
+
     // start() kan falen op iOS als de vorige sessie nog niet helemaal is opgeruimd.
-    // We doen een kleine retry met delay.
+    // Korte retry met delay.
     try {
-      recognitionRef.current.start();
+      rec.start();
     } catch (err) {
-      // Probeer opnieuw na 200ms
       await new Promise((r) => setTimeout(r, 200));
       try {
-        recognitionRef.current.start();
+        rec.start();
       } catch (err2) {
+        cleanupStream();
+        rec.onend = origEnd;
+        rec.onerror = origError;
         setListening(false);
         setStatus("Spraakherkenning kon niet starten");
         setMessages((m) => [...m, { role: "assistant", content: `⚠️ Spraakherkenning kon niet starten: ${err2.name || err2.message || "onbekend"}. Soms helpt het om de pagina opnieuw te laden.` }]);
