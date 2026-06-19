@@ -499,8 +499,8 @@ function Nova({ token, onLogout }) {
   const [voicePulse, setVoicePulse] = useState(0); // 0..1, golft tijdens spreken
   const [voiceOn, setVoiceOn] = useState(true);
   const [voiceRate, setVoiceRate] = useState(() => {
-    try { const v = parseFloat(localStorage.getItem("nova_voice_rate")); return isFinite(v) && v >= 0.5 && v <= 2.0 ? v : 1.05; }
-    catch { return 1.05; }
+    try { const v = parseFloat(localStorage.getItem("nova_voice_rate")); return isFinite(v) && v >= 0.5 && v <= 2.0 ? v : 1.15; }
+    catch { return 1.15; }
   });
   // Door gebruiker gekozen stem (op naam) - leeg betekent automatische keuze
   const [voiceName, setVoiceName] = useState(() => {
@@ -1422,27 +1422,66 @@ function Nova({ token, onLogout }) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { setMicSupported(false); return; }
     const rec = new SR();
-    rec.lang = "nl-NL"; rec.continuous = false; rec.interimResults = false;
+    rec.lang = "nl-NL";
+    rec.continuous = false;
+    // Interim resultaten aan zodat we tijdens spreken al iets zien.
+    // Op iOS Safari geeft dit veel responsievere feedback - de gebruiker ziet
+    // zijn woorden meteen verschijnen in plaats van pas na het eindigen.
+    rec.interimResults = true;
+    // Maximale 1 alternatief - meer is overhead op mobiel.
+    rec.maxAlternatives = 1;
+
     rec.onresult = (e) => {
-      const text = e.results[0][0].transcript;
-      vadStateRef.current.currentlyRecognizing = false;
-      setInput(text);
-      setListening(false);
-      // Bied always-listen aan na eerste push-to-talk uiting in deze sessie,
-      // maar alleen als het nog niet aan staat en de gebruiker echt de mic gebruikt.
-      if (!alwaysListen && !suggestedAlwaysListenRef.current) {
-        suggestedAlwaysListenRef.current = true;
-        setTimeout(() => {
-          const tip = "Wist je dat ik continu kan luisteren? Klik in het stem-paneel (🔊 rechtsboven) op 'Microfoon altijd aan', dan kun je vrij praten zonder telkens de mic-knop te drukken.";
-          setMessages((m) => [...m, { role: "assistant", content: tip }]);
-        }, 2000);
+      // Loop door alle results - bij interim krijgen we tussentijdse versies
+      let finalText = "";
+      let interimText = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const transcript = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += transcript;
+        else interimText += transcript;
       }
-      setTimeout(() => sendMessage(text), 250);
+      // Toon interim resultaat alvast in het invoer-veld
+      if (interimText) setInput(interimText);
+      if (finalText) {
+        vadStateRef.current.currentlyRecognizing = false;
+        setInput(finalText);
+        setListening(false);
+        // Bied always-listen aan na eerste push-to-talk uiting in deze sessie
+        if (!alwaysListen && !suggestedAlwaysListenRef.current) {
+          suggestedAlwaysListenRef.current = true;
+          setTimeout(() => {
+            const tip = "Wist je dat ik continu kan luisteren? Klik in het stem-paneel (🔊 rechtsboven) op 'Microfoon altijd aan', dan kun je vrij praten zonder telkens de mic-knop te drukken.";
+            setMessages((m) => [...m, { role: "assistant", content: tip }]);
+          }, 2000);
+        }
+        // Verstuur direct, geen vertraging meer
+        sendMessage(finalText);
+      }
     };
-    rec.onerror = () => {
+
+    rec.onerror = (e) => {
       vadStateRef.current.currentlyRecognizing = false;
       setListening(false);
+      // Maak de fout zichtbaar zodat de gebruiker weet waarom er niks gebeurt
+      const err = e.error || "onbekende fout";
+      const uitleg =
+        err === "no-speech" ? "Geen spraak gehoord. Probeer iets harder of dichter bij de microfoon te praten." :
+        err === "audio-capture" ? "Geen microfoon-toegang. Check de permissies in je browser." :
+        err === "not-allowed" ? "Microfoon-toegang geweigerd. Sta de microfoon toe in je browserinstellingen." :
+        err === "network" ? "Netwerk-fout bij spraakherkenning. Op Android/Chrome wordt je stem naar Google's servers gestuurd voor analyse - dat lukt nu niet. Probeer een ander netwerk of probeer over een paar seconden opnieuw." :
+        err === "service-not-allowed" ? "Spraakherkenning niet toegestaan in deze browser." :
+        err === "aborted" ? null : // gebruiker stopte zelf - geen melding nodig
+        `Spraakfout: ${err}`;
+      if (uitleg) {
+        // Niet steeds opnieuw tonen als always-listen elke paar seconden hetzelfde geeft
+        if (!window._novaLastSpeechError || Date.now() - window._novaLastSpeechError > 8000) {
+          window._novaLastSpeechError = Date.now();
+          setStatus(uitleg);
+          setMessages((m) => [...m, { role: "assistant", content: "⚠️ " + uitleg }]);
+        }
+      }
     };
+
     rec.onend = () => {
       vadStateRef.current.currentlyRecognizing = false;
       setListening(false);
@@ -1671,9 +1710,6 @@ function Nova({ token, onLogout }) {
     if (!window.speechSynthesis) return;
     window.speechSynthesis.cancel();
 
-    // Voor browser-stemmen geldt: agentVoices[role] kan een naam zijn als
-    // "Microsoft Fenna Online". Als die niet bestaat valt het terug op de
-    // default pickVoice() automatisch.
     const voices = voicesRef.current.length ? voicesRef.current : window.speechSynthesis.getVoices();
     const nl = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("nl"));
     let voice = null;
@@ -1683,21 +1719,19 @@ function Nova({ token, onLogout }) {
     }
     if (!voice) voice = pickVoice();
 
-    const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
-    sentences.forEach((sentence, i) => {
-      const u = new SpeechSynthesisUtterance(sentence.trim());
-      u.lang = "nl-NL";
-      u.rate = voiceRate;
-      u.pitch = 1.0;
-      u.volume = 1.0;
-      if (voice) u.voice = voice;
-      if (i === 0) u.onstart = () => setSpeaking(true);
-      if (i === sentences.length - 1) {
-        u.onend = () => setSpeaking(false);
-        u.onerror = () => setSpeaking(false);
-      }
-      window.speechSynthesis.speak(u);
-    });
+    // De hele tekst in één utterance plaatsen voorkomt onnatuurlijke
+    // pauzes tussen zinnen. De voorganger die per zin een aparte utterance
+    // maakte voegde elke keer een merkbare gap toe op vooral mobiel.
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = "nl-NL";
+    u.rate = voiceRate;
+    u.pitch = 1.0;
+    u.volume = 1.0;
+    if (voice) u.voice = voice;
+    u.onstart = () => setSpeaking(true);
+    u.onend = () => setSpeaking(false);
+    u.onerror = () => setSpeaking(false);
+    window.speechSynthesis.speak(u);
   }
   function stopSpeaking() {
     window.speechSynthesis?.cancel();
