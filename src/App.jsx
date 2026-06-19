@@ -640,36 +640,65 @@ function Nova({ token, onLogout }) {
       const groet = hour < 12 ? "Goedemorgen" : hour < 18 ? "Goedemiddag" : "Goedenavond";
       const naam = (typeof NOVA_NAME === "string" && NOVA_NAME) || "";
 
-      // Bouw de samenvatting alleen uit wat NOVA echt weet.
-      const delen = [];
-      if (imps.length) delen.push(`${imps.length} verbeterpunt${imps.length > 1 ? "en die ik heb verzameld" : " dat ik heb verzameld"}`);
-      if (inbox.connected && inbox.emails && inbox.emails.length) {
-        const urgent = inbox.emails.filter((e) => e.urgent).length;
-        delen.push(`${inbox.emails.length} nieuwe mail${inbox.emails.length > 1 ? "s" : ""}${urgent ? `, waarvan ${urgent} je aandacht vragen` : ""}`);
-      }
+      // Tel wat er nieuw is sinds vorige sessie
+      const urgent = (inbox.connected && inbox.emails) ? inbox.emails.filter((e) => e.urgent).length : 0;
+      const mailCount = (inbox.connected && inbox.emails) ? inbox.emails.length : 0;
+      const impCount = imps.length;
       const waNieuw = waInbox.filter((m) => !m.read).length;
-      if (waNieuw > 0) delen.push(`${waNieuw} nieuw${waNieuw > 1 ? "e" : ""} WhatsApp-bericht${waNieuw > 1 ? "en" : ""}`);
 
-      let tekst = `${groet}${naam ? ", " + naam : ""}, welkom terug. `;
-      if (delen.length) {
-        tekst += "Sinds je laatste sessie heb ik " + delen.join(" en ") + ". Waar wil je mee beginnen?";
+      // Formuleer het mail-stuk afhankelijk van aantal en urgentie
+      const mailStuk = mailCount === 0 ? "" :
+        mailCount === 1 ? `één nieuwe mail${urgent ? " die je aandacht vraagt" : ""}` :
+        urgent > 0 ? `${mailCount} mails, waarvan ${urgent} die je aandacht vragen` :
+        `${mailCount} nieuwe mails`;
+      const impStuk = impCount === 0 ? "" :
+        impCount === 1 ? "één verbeterpunt voor de volgende update" :
+        `${impCount} verbeterpunten`;
+      const waStuk = waNieuw === 0 ? "" :
+        waNieuw === 1 ? "één WhatsApp-bericht" : `${waNieuw} WhatsApp-berichten`;
+
+      const delen = [mailStuk, impStuk, waStuk].filter(Boolean);
+      const groetMetNaam = `${groet}${naam ? ", " + naam : ""}`;
+
+      // Verschillende openingsvarianten - random gekozen voor variatie
+      const sluitvragen = [
+        "Waar wil je mee beginnen?",
+        "Waar zal ik je mee helpen?",
+        "Wat staat er op het programma?",
+        "Wat wil je als eerste oppakken?",
+        "Zal ik ergens mee starten?",
+      ];
+      const sluit = sluitvragen[Math.floor(Math.random() * sluitvragen.length)];
+
+      let tekst;
+      if (delen.length === 0) {
+        // Niets te melden - lichte variatie
+        const lege = [
+          `${groetMetNaam}. Niks dat schreeuwt om aandacht. ${sluit}`,
+          `${groetMetNaam}. Geen openstaande zaken. ${sluit}`,
+          `${groetMetNaam}. Alles staat rustig op zijn plek. ${sluit}`,
+          `${groetMetNaam}. Klaar om weer aan de slag te gaan. ${sluit}`,
+        ];
+        tekst = lege[Math.floor(Math.random() * lege.length)];
       } else {
-        tekst += "Er zijn geen openstaande zaken die je aandacht vragen. Waar wil je mee beginnen?";
+        // Lijst aan elkaar plakken: "x en y" of "x, y en z"
+        const lijst = delen.length === 1 ? delen[0] :
+          delen.length === 2 ? `${delen[0]} en ${delen[1]}` :
+          `${delen.slice(0, -1).join(", ")} en ${delen.slice(-1)[0]}`;
+
+        const intros = [
+          `${groetMetNaam}. Sinds vorige keer zijn er ${lijst}. ${sluit}`,
+          `${groetMetNaam}, fijn dat je er bent. Er liggen ${lijst}. ${sluit}`,
+          `${groetMetNaam}. Ik heb ${lijst} voor je. ${sluit}`,
+          `${groetMetNaam}. Even bijpraten: ${lijst}. ${sluit}`,
+          `${groetMetNaam}. Een kort overzicht: ${lijst}. ${sluit}`,
+        ];
+        tekst = intros[Math.floor(Math.random() * intros.length)];
       }
 
-      // Status van koppelingen erbij (alleen als de wizard die heeft teruggegeven)
-      // zodat NOVA zelf detecteert welke integraties actief zijn (verbeterpunt 10-16).
-      const integ = liveIntegrations || {};
-      const actief = [];
-      const inactief = [];
-      if (integ.email !== undefined) (integ.email ? actief : inactief).push("e-mail");
-      if (integ.whatsapp !== undefined) (integ.whatsapp ? actief : inactief).push("WhatsApp");
-      if (integ.imageGen !== undefined && integ.imageGen) actief.push("AI-beelden");
-      if (integ.tiktok !== undefined && integ.tiktok) actief.push("TikTok");
-      if (integ.meta !== undefined && integ.meta) actief.push("Instagram en Facebook");
-      if (actief.length) tekst += " Actieve koppelingen: " + actief.join(", ") + ".";
-      if (!inbox.connected && !actief.includes("e-mail")) {
-        tekst += " Je mail is nog niet gekoppeld - klik op het mail-icoon rond de cirkel om dat in te stellen.";
+      // Eenmalige hint als mail nog niet gekoppeld is - geen status-melding maar context
+      if (!inbox.connected && !d6?.configured) {
+        tekst += " Tip: koppel eerst je mail via het envelop-icoon rond de cirkel, dan kan ik over je inbox meedenken.";
       }
 
       // Toon de begroeting als bericht in de chat en spreek hem uit.
