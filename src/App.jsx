@@ -558,6 +558,9 @@ function Nova({ token, onLogout }) {
   // Diagnose-info over de opslag - laat zien of we Redis/KV/geheugen gebruiken
   const [storageInfo, setStorageInfo] = useState(null);
   const [showStorageInfo, setShowStorageInfo] = useState(false);
+  // Mic-diagnose paneel om iOS Safari problemen op te sporen
+  const [showMicDiag, setShowMicDiag] = useState(false);
+  const [micDiag, setMicDiag] = useState(null);
   // Stemmen per agent-rol (verbeterpunt M). Default-keuzes komen uit OpenAI's stemmen.
   // Marketing = autoritaire mannelijke stem (onyx); Content = vrolijke vrouwelijke (nova);
   // Visual = warme verteller (fable); Video = bedachtzaam (sage).
@@ -1770,8 +1773,110 @@ function Nova({ token, onLogout }) {
     window.speechSynthesis.speak(u);
   }
 
+  // Diagnose-functie die stap voor stap test waar de mic-keten breekt.
+  // Cruciaal voor iPhone Safari waar het stilletjes faalt zonder duidelijke melding.
+  async function runMicDiagnose() {
+    setShowMicDiag(true);
+    setMicDiag({ running: true, steps: [] });
+    const log = [];
+
+    // Stap 1: Browser-detectie
+    const ua = navigator.userAgent || "";
+    const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+    const isSafari = /^((?!chrome|android).)*safari/i.test(ua);
+    const isChrome = /Chrome/.test(ua) && /Google Inc/.test(navigator.vendor || "");
+    let browser = "onbekend";
+    if (isIOS && isSafari) browser = "iPhone Safari";
+    else if (isIOS) browser = "iPhone (andere browser - gebruikt ook Safari engine)";
+    else if (isChrome) browser = "Chrome";
+    else if (isSafari) browser = "Safari (desktop)";
+    log.push({ stap: "1. Browser", status: "ok", detail: browser, info: ua.slice(0, 80) });
+
+    // Stap 2: SpeechRecognition beschikbaar?
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      log.push({ stap: "2. SpeechRecognition API", status: "fout", detail: "Niet beschikbaar in deze browser", info: "Op iOS werkt dit alleen vanaf Safari 14.5+. Mogelijk staat je iOS niet up-to-date." });
+      setMicDiag({ running: false, steps: log });
+      return;
+    }
+    log.push({ stap: "2. SpeechRecognition API", status: "ok", detail: window.SpeechRecognition ? "standaard" : "webkitSpeechRecognition (Safari)" });
+
+    // Stap 3: Permissions API ondersteund?
+    let permStatus = "onbekend";
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const p = await navigator.permissions.query({ name: "microphone" });
+        permStatus = p.state; // 'granted', 'denied', 'prompt'
+      } catch (e) {
+        permStatus = "niet ondersteund (iOS Safari kent dit niet)";
+      }
+    }
+    log.push({ stap: "3. Microfoon-permissie", status: permStatus === "granted" ? "ok" : permStatus === "denied" ? "fout" : "wacht", detail: permStatus, info: permStatus === "denied" ? "Toestemming geweigerd. Ga naar Instellingen > Safari > Microfoon en sta agents.jna-events.nl toe." : null });
+
+    // Stap 4: getUserMedia werkt?
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      log.push({ stap: "4. getUserMedia", status: "fout", detail: "Niet beschikbaar", info: "Zonder dit kan geen microfoon-toegang worden gevraagd." });
+      setMicDiag({ running: false, steps: log });
+      return;
+    }
+    let streamOK = false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      streamOK = true;
+      log.push({ stap: "4. Microfoon-toegang", status: "ok", detail: "Stream verkregen en weer vrijgegeven" });
+    } catch (err) {
+      log.push({ stap: "4. Microfoon-toegang", status: "fout", detail: err.name + ": " + err.message, info: err.name === "NotAllowedError" ? "Op iOS: ga naar Instellingen > Safari > Microfoon en sta de site toe. Daarna deze pagina vernieuwen." : null });
+      setMicDiag({ running: false, steps: log });
+      return;
+    }
+
+    // Stap 5: SpeechRecognition kan starten?
+    if (!streamOK) {
+      setMicDiag({ running: false, steps: log });
+      return;
+    }
+    log.push({ stap: "5. Test recognizer", status: "wacht", detail: "Aan het proberen..." });
+    setMicDiag({ running: true, steps: [...log] });
+
+    const testRec = new SR();
+    testRec.lang = "nl-NL";
+    testRec.continuous = false;
+    testRec.interimResults = false;
+    testRec.maxAlternatives = 1;
+    const promise = new Promise((resolve) => {
+      let resolved = false;
+      const finish = (result) => { if (!resolved) { resolved = true; resolve(result); } };
+      testRec.onstart = () => finish({ ok: true, msg: "Recognizer gestart - WERKT" });
+      testRec.onerror = (e) => finish({ ok: false, msg: "Recognizer-fout: " + (e.error || "onbekend"), errcode: e.error });
+      testRec.onend = () => finish({ ok: false, msg: "Recognizer stopte direct zonder feedback (typisch iOS Safari probleem)" });
+      setTimeout(() => finish({ ok: false, msg: "Geen reactie binnen 3 seconden - recognizer hangt", errcode: "timeout" }), 3000);
+      try {
+        testRec.start();
+      } catch (err) {
+        finish({ ok: false, msg: "start() faalde direct: " + err.message });
+      }
+    });
+    const result = await promise;
+    try { testRec.stop(); } catch (e) { void e; }
+    if (result.ok) {
+      log[log.length - 1] = { stap: "5. Test recognizer", status: "ok", detail: result.msg, info: "Mic werkt - probeer nu te praten via de mic-knop." };
+    } else {
+      let info = null;
+      if (result.errcode === "network") info = "Spraak wordt naar Apple's servers gestuurd voor analyse, en die verbinding lukt nu niet. Probeer ander netwerk.";
+      else if (result.errcode === "service-not-allowed") info = "iOS Safari heeft spraakherkenning niet toegestaan. Check je iOS versie (14.5+) en herstart Safari.";
+      else if (result.errcode === "not-allowed") info = "Microfoon geweigerd op API-niveau ondanks dat getUserMedia werkte. Vreemd - herstart browser.";
+      log[log.length - 1] = { stap: "5. Test recognizer", status: "fout", detail: result.msg, info };
+    }
+    setMicDiag({ running: false, steps: log });
+  }
+
   async function toggleMic() {
-    if (!micSupported) { setStatus("Spraak werkt in Chrome of Edge — typ je bericht"); return; }
+    if (!micSupported) {
+      setStatus("Spraakherkenning niet ondersteund in deze browser");
+      setMessages((m) => [...m, { role: "assistant", content: "⚠️ Deze browser ondersteunt geen spraakherkenning. Op Android: gebruik Chrome. Op iOS: spraakherkenning via Safari werkt niet, gebruik Chrome op iOS." }]);
+      return;
+    }
     // In altijd-luister modus is deze knop een dempen-knop
     if (alwaysListen) {
       setMicMuted((m) => {
@@ -1782,21 +1887,52 @@ function Nova({ token, onLogout }) {
       return;
     }
     // Klassieke push-to-talk modus
-    if (listening) { recognitionRef.current?.stop(); setListening(false); return; }
-    // Op mobiel moet getUserMedia ABSOLUUT vanuit een directe gebruikersinteractie
-    // worden aangeroepen, anders blokkeert iOS Safari het permanent. Daarom geen
-    // andere async work hiervoor.
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Stop de stream direct - we hebben hem alleen voor de permissie nodig.
-      // Web Speech API regelt haar eigen audio.
-      stream.getTracks().forEach((t) => t.stop());
-    } catch (err) {
-      setStatus("Geef toegang tot je microfoon in je browserinstellingen");
+    if (listening) {
+      try { recognitionRef.current?.stop(); } catch (e) { void e; }
+      setListening(false);
       return;
     }
-    stopSpeaking(); setListening(true); setStatus("Luisteren...");
-    try { recognitionRef.current.start(); } catch { setListening(false); }
+    // Bestaat de recognizer wel?
+    if (!recognitionRef.current) {
+      setMessages((m) => [...m, { role: "assistant", content: "⚠️ Spraakherkenning is niet geïnitialiseerd. Probeer de pagina opnieuw te laden (Ctrl+Shift+R)." }]);
+      return;
+    }
+    // Op mobiel moet getUserMedia ABSOLUUT vanuit een directe gebruikersinteractie
+    // worden aangeroepen, anders blokkeert iOS Safari het permanent.
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (err) {
+      const reason = err.name === "NotAllowedError" ? "geweigerd door gebruiker of door browser-instelling" :
+                     err.name === "NotFoundError" ? "geen microfoon gevonden op dit apparaat" :
+                     err.name === "NotReadableError" ? "microfoon wordt door een andere app gebruikt" :
+                     err.name === "OverconstrainedError" ? "microfoon-instelling niet ondersteund" :
+                     err.message || "onbekend";
+      setStatus("Microfoon-fout: " + reason);
+      setMessages((m) => [...m, { role: "assistant", content: `⚠️ Geen toegang tot microfoon (${reason}). Op iOS: ga naar Instellingen > Safari > Microfoon en sta 'agents.jna-events.nl' toe. Op Android: tik op het hangslot-icoon in de URL-balk en sta de microfoon toe.` }]);
+      return;
+    }
+
+    // Stop spraak die misschien nog speelt voor we beginnen te luisteren
+    stopSpeaking();
+    setListening(true);
+    setStatus("Luisteren...");
+
+    // start() kan falen op iOS als de vorige sessie nog niet helemaal is opgeruimd.
+    // We doen een kleine retry met delay.
+    try {
+      recognitionRef.current.start();
+    } catch (err) {
+      // Probeer opnieuw na 200ms
+      await new Promise((r) => setTimeout(r, 200));
+      try {
+        recognitionRef.current.start();
+      } catch (err2) {
+        setListening(false);
+        setStatus("Spraakherkenning kon niet starten");
+        setMessages((m) => [...m, { role: "assistant", content: `⚠️ Spraakherkenning kon niet starten: ${err2.name || err2.message || "onbekend"}. Soms helpt het om de pagina opnieuw te laden.` }]);
+      }
+    }
   }
 
   const placeActions = useCallback((list) => {
@@ -2068,7 +2204,7 @@ function Nova({ token, onLogout }) {
   const activeTask = tasks.find((t) => t.id === openTask);
 
   return (
-    <div style={{ fontFamily: "Inter, system-ui, sans-serif", background: "radial-gradient(ellipse at 50% 0%, #0A1F44 0%, #04122B 55%, #020A1A 100%)", minHeight: "100vh", color: "#E8F1FF", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
+    <div style={{ fontFamily: "Inter, system-ui, sans-serif", background: "radial-gradient(ellipse at 50% 0%, #0A1F44 0%, #04122B 55%, #020A1A 100%)", height: "100dvh", maxHeight: "100vh", color: "#E8F1FF", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
       <style>{`
         @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
         @keyframes spinR{from{transform:rotate(0)}to{transform:rotate(360deg)}}
@@ -2107,13 +2243,14 @@ function Nova({ token, onLogout }) {
         .panel-icon:hover .panel-icon-tooltip{opacity:1}
         .panel-icon:active .panel-icon-tooltip,.panel-icon:focus .panel-icon-tooltip{opacity:1}
         @media (max-width: 720px){
-          .nova-main-flex{flex-direction:column!important;flex-wrap:nowrap!important}
-          .nova-orb-area{flex:0 0 auto!important;min-height:520px!important;padding:20px!important}
-          .nova-chat-area{flex:1 1 auto!important;width:100%!important;border-left:none!important;border-top:1px solid rgba(56,230,255,.1)!important;min-height:240px!important;max-height:none!important}
+          .nova-main-flex{flex-direction:column!important;flex-wrap:nowrap!important;height:calc(100dvh - 70px)!important;overflow:hidden!important}
+          .nova-orb-area{flex:0 0 auto!important;min-height:auto!important;height:60%!important;padding:20px!important;overflow:visible!important}
+          .nova-chat-area{flex:1 1 auto!important;width:100%!important;border-left:none!important;border-top:1px solid rgba(56,230,255,.1)!important;min-height:0!important;max-height:none!important;height:40%!important;display:flex!important;flex-direction:column!important}
           .nova-orb-area .panel-icon-circle{width:38px;height:38px}
         }
         @media (max-width: 480px){
-          .nova-orb-area{padding:12px!important;min-height:460px!important}
+          .nova-orb-area{padding:12px!important;height:62%!important}
+          .nova-chat-area{height:38%!important}
         }
         @media(prefers-reduced-motion:reduce){.idle-star{transition:opacity .4s}}
       `}</style>
@@ -2503,8 +2640,8 @@ function Nova({ token, onLogout }) {
           {tasks.filter((t) => t.state === "running").length > 0 && (<div style={{ marginTop: 8, fontSize: 11, color: AMBER, zIndex: 2 }}>{tasks.filter((t) => t.state === "running").length} agent(s) aan het werk</div>)}
         </div>
 
-        <div className="nova-chat-area" style={{ flex: "0 0 300px", width: 300, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(56,230,255,.1)", minHeight: 480, maxHeight: "calc(100vh - 70px)" }}>
-          <div ref={scrollRef} className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="nova-chat-area" style={{ flex: "0 0 300px", width: 300, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(56,230,255,.1)", minHeight: 480, maxHeight: "calc(100vh - 70px)", minWidth: 0 }}>
+          <div ref={scrollRef} className="nova-scroll" style={{ flex: "1 1 0", overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
             {messages.map((m, i) => (<div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "88%", padding: "10px 14px", borderRadius: m.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px", background: m.role === "user" ? `linear-gradient(135deg, ${PURPLE}, #5A52B5)` : "rgba(56,230,255,.08)", border: m.role === "user" ? "none" : "1px solid rgba(56,230,255,.2)", fontSize: 13, lineHeight: 1.5, color: m.role === "user" ? "#fff" : "#DCEEFF", whiteSpace: "pre-wrap" }}>{m.content}</div>))}
             {busy && (<div style={{ alignSelf: "flex-start", padding: "12px 16px", borderRadius: "14px 14px 14px 4px", background: "rgba(56,230,255,.08)", border: "1px solid rgba(56,230,255,.2)", display: "flex", gap: 5 }}>{[0, 1, 2].map((d) => (<span key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: CYAN, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}</div>)}
           </div>
@@ -2524,6 +2661,12 @@ function Nova({ token, onLogout }) {
                 transition: "background .15s ease",
               }}
             >{alwaysListen ? (micMuted ? "🔇" : "🎙") : (listening ? "■" : "🎙")}</button>
+            <button
+              onClick={runMicDiagnose}
+              aria-label="Mic-diagnose"
+              title="Test de microfoon-keten stap voor stap"
+              style={{ width: 28, height: 28, borderRadius: "50%", border: "1px solid rgba(180,210,255,.25)", background: "transparent", color: "rgba(180,210,255,.55)", cursor: "pointer", fontSize: 13, flexShrink: 0, padding: 0 }}
+            >ⓘ</button>
             <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMessage()} placeholder="Praat met NOVA of typ een opdracht..." style={{ flex: 1, background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 22, padding: "10px 15px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
             <button onClick={() => sendMessage()} disabled={busy} aria-label="Versturen" style={{ width: 40, height: 40, borderRadius: "50%", border: "none", background: `linear-gradient(135deg, ${CYAN}, ${PURPLE})`, color: "#04122B", cursor: busy ? "not-allowed" : "pointer", fontSize: 17, flexShrink: 0, opacity: busy ? 0.5 : 1, fontWeight: 700 }}>↑</button>
           </div>
@@ -3575,6 +3718,51 @@ function Nova({ token, onLogout }) {
           </div>
         </div>
       )}
+      {showMicDiag && (
+        <div onClick={() => setShowMicDiag(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${CYAN}33` }}>
+              <span style={{ fontSize: 22 }}>🔍</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Microfoon-diagnose</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Stap-voor-stap check waar het stopt</div>
+              </div>
+              <button onClick={() => setShowMicDiag(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px" }}>×</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+              {micDiag?.steps?.length ? micDiag.steps.map((s, i) => {
+                const col = s.status === "ok" ? "#5DCAA5" : s.status === "fout" ? "#FF8FA3" : AMBER;
+                const icon = s.status === "ok" ? "✓" : s.status === "fout" ? "✗" : "⋯";
+                return (
+                  <div key={i} style={{ padding: "10px 12px", marginBottom: 8, background: `${col}10`, border: `1px solid ${col}40`, borderRadius: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span style={{ color: col, fontSize: 14, fontWeight: 700, width: 18 }}>{icon}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "#fff", flex: 1 }}>{s.stap}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "rgba(220,238,255,.85)", marginLeft: 26 }}>{s.detail}</div>
+                    {s.info && (
+                      <div style={{ fontSize: 11, color: "rgba(180,210,255,.75)", marginLeft: 26, marginTop: 6, padding: "6px 8px", background: "rgba(56,230,255,.05)", borderLeft: `2px solid ${CYAN}`, lineHeight: 1.5 }}>
+                        💡 {s.info}
+                      </div>
+                    )}
+                  </div>
+                );
+              }) : (
+                <div style={{ padding: 20, textAlign: "center", color: "rgba(180,210,255,.5)" }}>Wachten op test...</div>
+              )}
+              {micDiag?.running && (
+                <div style={{ padding: 12, textAlign: "center", color: CYAN, fontSize: 12 }}>Bezig met testen...</div>
+              )}
+            </div>
+            <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,.06)", display: "flex", gap: 8 }}>
+              <button onClick={runMicDiagnose} disabled={micDiag?.running} style={{ border: "1px solid rgba(56,230,255,.4)", borderRadius: 8, padding: "8px 14px", background: "rgba(56,230,255,.06)", color: CYAN, fontSize: 12, fontWeight: 600, cursor: micDiag?.running ? "wait" : "pointer", opacity: micDiag?.running ? 0.5 : 1 }}>🔄 Opnieuw testen</button>
+              <div style={{ flex: 1 }} />
+              <button onClick={() => setShowMicDiag(false)} style={{ border: "1px solid rgba(180,210,255,.2)", borderRadius: 8, padding: "8px 14px", background: "transparent", color: "rgba(220,238,255,.85)", fontSize: 12, cursor: "pointer" }}>Sluiten</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showStorageInfo && storageInfo && (
         <div onClick={() => setShowStorageInfo(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 29, padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${storageInfo.persistent ? "#5DCAA555" : "#FF8FA3"}`, borderRadius: 16, overflow: "hidden" }}>
