@@ -1,11 +1,12 @@
 import { verifyToken } from "./_auth.js";
-import { readData, writeData, KEYS } from "./_config.js";
+import { readData, writeData, KEYS, storageStatus } from "./_config.js";
 
-// Samengevoegde data-functie voor de drie lijst-soorten in NOVA:
+// Samengevoegde data-functie voor de lijst-soorten in NOVA:
 //
 //   ?type=catalog       - productcatalogus van JnA Events
 //   ?type=calendar      - contentkalender met geplande posts
 //   ?type=improvements  - verbeterpunten die NOVA verzamelt
+//   ?type=storage       - status van de opslag (Redis/KV/geheugen)
 //
 // Drie aparte functies zijn samengebracht in één om binnen de Vercel
 // Hobby-limiet (12 serverless functies) te blijven. De logica per type
@@ -122,7 +123,11 @@ export default async function handler(req, res) {
     if (type === "catalog") return await handleCatalog(req, res);
     if (type === "calendar") return await handleCalendar(req, res);
     if (type === "improvements") return await handleImprovements(req, res);
-    return res.status(400).json({ error: "Onbekend type. Gebruik ?type=catalog, calendar of improvements." });
+    if (type === "storage") {
+      const status = await storageStatus();
+      return res.status(200).json(status);
+    }
+    return res.status(400).json({ error: "Onbekend type. Gebruik ?type=catalog, calendar, improvements of storage." });
   } catch (err) {
     console.error("Data-functie fout:", err.message);
     return res.status(500).json({ error: "Kon data niet verwerken: " + err.message });
