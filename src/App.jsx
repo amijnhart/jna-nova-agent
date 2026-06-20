@@ -482,6 +482,121 @@ export default function App() {
   return <Nova token={token} onLogout={logout} />;
 }
 
+// Kleine helper-component voor het toevoegen van een tekst-snippet aan bedrijfsdocumenten.
+// State lokaal gehouden zodat de hoofdcomponent er niet door rendert bij elke toetsaanslag.
+function SnippetAddForm({ onAdd }) {
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState("");
+  const [category, setCategory] = useState("algemeen");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} style={{ width: "100%", padding: "10px 12px", background: "rgba(127,119,221,.08)", border: "1px dashed rgba(127,119,221,.4)", borderRadius: 10, color: "#B3ADEE", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Nieuw tekstfragment</button>
+    );
+  }
+  return (
+    <div style={{ padding: "12px 14px", background: "rgba(127,119,221,.06)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+      <input
+        type="text" value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        placeholder="Naam (bijv. IBAN, BTW-nummer, kleurpalet)"
+        style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 6, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit" }}
+      />
+      <select
+        value={category}
+        onChange={(e) => setCategory(e.target.value)}
+        style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 6, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit" }}
+      >
+        <option value="algemeen">Algemeen</option>
+        <option value="naw">NAW-gegevens</option>
+        <option value="bank">Bankgegevens</option>
+        <option value="btw">BTW &amp; juridisch</option>
+        <option value="kleur">Merkkleuren</option>
+        <option value="tone">Tone of voice</option>
+      </select>
+      <textarea
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Waarde of inhoud"
+        rows={3}
+        style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 6, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+      />
+      <div style={{ display: "flex", gap: 6 }}>
+        <button
+          onClick={async () => {
+            if (!label.trim() || !value.trim()) return;
+            setBusy(true);
+            const key = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 50);
+            const ok = await onAdd(key, value.trim(), label.trim(), category);
+            setBusy(false);
+            if (ok) {
+              setLabel(""); setValue(""); setCategory("algemeen"); setOpen(false);
+            }
+          }}
+          disabled={busy || !label.trim() || !value.trim()}
+          style={{ flex: 1, border: "none", borderRadius: 6, padding: "8px", background: (label.trim() && value.trim()) ? "linear-gradient(135deg, #7F77DD, #5A52B5)" : "rgba(255,255,255,.08)", color: (label.trim() && value.trim()) ? "#fff" : "rgba(180,210,255,.4)", fontSize: 12, fontWeight: 700, cursor: (label.trim() && value.trim()) ? "pointer" : "not-allowed" }}
+        >Opslaan</button>
+        <button onClick={() => { setOpen(false); setLabel(""); setValue(""); }} style={{ border: "1px solid rgba(180,210,255,.2)", borderRadius: 6, padding: "8px 12px", background: "transparent", color: "rgba(220,238,255,.7)", fontSize: 12, cursor: "pointer" }}>Annuleren</button>
+      </div>
+    </div>
+  );
+}
+
+function FileUploadForm({ onUpload }) {
+  const [label, setLabel] = useState("");
+  const [category, setCategory] = useState("rider");
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  return (
+    <div style={{ marginTop: 10, padding: "12px 14px", background: "rgba(56,230,255,.05)", border: "1px dashed rgba(56,230,255,.3)", borderRadius: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)", marginBottom: 2 }}>Nieuw bestand uploaden</div>
+      <input
+        type="text" value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        placeholder="Naam (bijv. Rider DJ + apparatuur)"
+        style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 6, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit" }}
+      />
+      <select
+        value={category}
+        onChange={(e) => setCategory(e.target.value)}
+        style={{ background: "rgba(4,18,43,.6)", border: "1px solid rgba(56,230,255,.25)", borderRadius: 6, padding: "8px 10px", color: "#E8F1FF", fontSize: 12, outline: "none", fontFamily: "inherit" }}
+      >
+        <option value="rider">Technical Rider</option>
+        <option value="handleiding">Handleiding</option>
+        <option value="logo">Logo</option>
+        <option value="handtekening">Handtekening</option>
+        <option value="presskit">Promotiemateriaal / Presskit</option>
+        <option value="voorwaarden">Algemene voorwaarden</option>
+        <option value="document">Overig document</option>
+      </select>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".pdf,.png,.jpg,.jpeg,.docx,.txt"
+        style={{ fontSize: 11, color: "rgba(180,210,255,.7)" }}
+      />
+      <button
+        onClick={async () => {
+          const file = fileRef.current?.files?.[0];
+          if (!file || !label.trim()) return;
+          setBusy(true);
+          const ok = await onUpload(file, label.trim(), category);
+          setBusy(false);
+          if (ok) {
+            setLabel(""); setCategory("rider");
+            if (fileRef.current) fileRef.current.value = "";
+          }
+        }}
+        disabled={busy}
+        style={{ border: "none", borderRadius: 6, padding: "8px", background: busy ? "rgba(255,255,255,.08)" : "linear-gradient(135deg, #38E6FF, #1B97AF)", color: busy ? "rgba(180,210,255,.4)" : "#04122B", fontSize: 12, fontWeight: 700, cursor: busy ? "wait" : "pointer" }}
+      >{busy ? "Uploaden..." : "Uploaden"}</button>
+    </div>
+  );
+}
+
 function Nova({ token, onLogout }) {
   const [justEntered, setJustEntered] = useState(true);
   useEffect(() => {
@@ -560,6 +675,11 @@ function Nova({ token, onLogout }) {
   const [showStorageInfo, setShowStorageInfo] = useState(false);
   // Eén centraal instellingen-paneel voor stem, mic, notificaties en opslag
   const [showSettings, setShowSettings] = useState(false);
+  // Bedrijfsdocumenten - tekst-snippets en bestanden (PDF's, logo etc.)
+  const [snippets, setSnippets] = useState([]);
+  const [docFiles, setDocFiles] = useState([]);
+  const [blobConfigured, setBlobConfigured] = useState(false);
+  const [showDocs, setShowDocs] = useState(false);
   // Mic-diagnose paneel om iOS Safari problemen op te sporen
   const [showMicDiag, setShowMicDiag] = useState(false);
   const [micDiag, setMicDiag] = useState(null);
@@ -622,6 +742,10 @@ function Nova({ token, onLogout }) {
   const integrationsRef = useRef({});
   const emailsRef = useRef([]);
   const boeksyRef = useRef(null);
+  const snippetsRef = useRef([]);
+  const docFilesRef = useRef([]);
+  useEffect(() => { snippetsRef.current = snippets; }, [snippets]);
+  useEffect(() => { docFilesRef.current = docFiles; }, [docFiles]);
 
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
   useEffect(() => { catalogRef.current = catalog; }, [catalog]);
@@ -680,7 +804,7 @@ function Nova({ token, onLogout }) {
       };
 
       // Alle data parallel ophalen. Scheelt 2-3 seconden bij login op trage verbindingen.
-      const [d1, d2, d3, d4, d5, d6, dB, dWA, dStorage] = await Promise.all([
+      const [d1, d2, d3, d4, d5, d6, dB, dWA, dStorage, dSnip, dFiles] = await Promise.all([
         safeFetch(IMPROVE_URL),
         safeFetch(INBOX_URL),
         safeFetch(CATALOG_URL),
@@ -690,6 +814,8 @@ function Nova({ token, onLogout }) {
         safeFetch(BOEKSY_URL),
         safeFetch("/api/whatsapp?action=inbox"),
         safeFetch("/api/data?type=storage"),
+        safeFetch("/api/documents?type=snippets"),
+        safeFetch("/api/documents?type=files"),
       ]);
 
       let imps = [];
@@ -698,6 +824,11 @@ function Nova({ token, onLogout }) {
       let waInbox = [];
 
       if (dStorage) setStorageInfo(dStorage);
+      if (dSnip && Array.isArray(dSnip.items)) setSnippets(dSnip.items);
+      if (dFiles) {
+        if (Array.isArray(dFiles.items)) setDocFiles(dFiles.items);
+        if (typeof dFiles.blobConfigured === "boolean") setBlobConfigured(dFiles.blobConfigured);
+      }
       if (d1 && Array.isArray(d1.items)) { imps = d1.items; setImprovements(d1.items); }
       if (d2) { inbox = d2; if (inbox.connected && Array.isArray(inbox.emails)) setEmails(inbox.emails); }
       if (d3 && Array.isArray(d3.items)) setCatalog(d3.items);
@@ -1776,8 +1907,9 @@ function Nova({ token, onLogout }) {
   }
 
   // Diagnose-functie die stap voor stap test waar de mic-keten breekt.
-  // Cruciaal voor iPhone Safari waar het stilletjes faalt zonder duidelijke melding.
-  async function runMicDiagnose() {
+  // useNoiseReduction = true: stream met echoCancellation/noiseSuppression/autoGainControl
+  // useNoiseReduction = false: stream met audio:true (basis, geen opties)
+  async function runMicDiagnose(useNoiseReduction = true) {
     setShowMicDiag(true);
     setMicDiag({ running: true, steps: [] });
     const log = [];
@@ -1824,14 +1956,11 @@ function Nova({ token, onLogout }) {
     }
     let stream = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }
-      });
-      log.push({ stap: "4. Microfoon-toegang", status: "ok", detail: "Stream verkregen met ruisonderdrukking" });
+      const audioOpts = useNoiseReduction
+        ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        : true;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioOpts });
+      log.push({ stap: "4. Microfoon-toegang", status: "ok", detail: useNoiseReduction ? "Stream met ruisonderdrukking verkregen" : "Stream zonder audio-opties verkregen (basis)" });
     } catch (err) {
       log.push({ stap: "4. Microfoon-toegang", status: "fout", detail: err.name + ": " + err.message, info: err.name === "NotAllowedError" ? "Op iOS: ga naar Instellingen > Safari > Microfoon en sta de site toe. Daarna deze pagina vernieuwen." : null });
       setMicDiag({ running: false, steps: log });
@@ -2013,7 +2142,7 @@ function Nova({ token, onLogout }) {
     const res = await fetch(CHAT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify({ messages: msgs, mode, catalog: catalogRef.current, integrations, voiceRate, emails: mailContext, boeksy: boeksyContext, lastViewed: lastViewedContext }),
+      body: JSON.stringify({ messages: msgs, mode, catalog: catalogRef.current, integrations, voiceRate, emails: mailContext, boeksy: boeksyContext, lastViewed: lastViewedContext, snippets: snippetsRef.current, files: docFilesRef.current }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) { onLogout(); throw new Error("Sessie verlopen, log opnieuw in."); }
@@ -2074,6 +2203,88 @@ function Nova({ token, onLogout }) {
     }).slice(0, 5);
 
     return { scope, label, events, mails, openQuotes };
+  }
+
+  // --- BEDRIJFSDOCUMENTEN HELPERS ---
+
+  async function saveSnippet(key, value, label, category) {
+    try {
+      const r = await fetch("/api/documents?type=snippets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ key, value, label, category }),
+      });
+      const d = await r.json();
+      if (Array.isArray(d.items)) setSnippets(d.items);
+      return d.ok;
+    } catch (e) { console.error("Snippet opslaan mislukt:", e); return false; }
+  }
+
+  async function deleteSnippet(key) {
+    if (!window.confirm("Dit fragment verwijderen?")) return;
+    try {
+      const r = await fetch("/api/documents?type=snippets&key=" + encodeURIComponent(key), {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + token },
+      });
+      const d = await r.json();
+      if (Array.isArray(d.items)) setSnippets(d.items);
+    } catch (e) { console.error("Snippet verwijderen mislukt:", e); }
+  }
+
+  // Bestand uploaden: leest een File-object en stuurt het als base64 naar server
+  async function uploadDocFile(file, label, category) {
+    if (!file) return;
+    // Lees naar base64
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        // result is dataURL, strip prefix
+        const dataUrl = reader.result;
+        const comma = dataUrl.indexOf(",");
+        resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+      };
+      reader.onerror = () => reject(new Error("Lezen mislukt"));
+      reader.readAsDataURL(file);
+    });
+
+    try {
+      const r = await fetch("/api/documents?type=files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type || "application/octet-stream",
+          base64,
+          label: label || file.name,
+          category: category || "document",
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        setMessages((m) => [...m, { role: "assistant", content: "⚠️ Upload mislukt: " + (d.error || "onbekende fout") }]);
+        return false;
+      }
+      if (Array.isArray(d.items)) setDocFiles(d.items);
+      setToast({ icon: "📁", text: file.name + " opgeslagen", color: CYAN });
+      setTimeout(() => setToast(null), 2500);
+      return true;
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: "⚠️ Upload mislukt: " + e.message }]);
+      return false;
+    }
+  }
+
+  async function deleteDocFile(id) {
+    if (!window.confirm("Dit document verwijderen?")) return;
+    try {
+      const r = await fetch("/api/documents?type=files&id=" + encodeURIComponent(id), {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + token },
+      });
+      const d = await r.json();
+      if (Array.isArray(d.items)) setDocFiles(d.items);
+    } catch (e) { console.error("Bestand verwijderen mislukt:", e); }
   }
 
   async function sendMessage(forced) {
@@ -3627,6 +3838,92 @@ function Nova({ token, onLogout }) {
           </div>
         </div>
       )}
+      {showDocs && (
+        <div onClick={() => setShowDocs(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(620px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${CYAN}33` }}>
+              <span style={{ fontSize: 22 }}>📁</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Bedrijfsdocumenten</div>
+                <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Tekst-snippets, riders, logo, handtekening</div>
+              </div>
+              <button onClick={() => setShowDocs(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px" }}>×</button>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+
+              {/* SNIPPETS */}
+              <div style={{ marginBottom: 22 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 16 }}>📝</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: ".5px" }}>Tekst-fragmenten</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2 }}>Kleurpalet, NAW, BTW, bankrekening - NOVA gebruikt deze actief</div>
+                  </div>
+                </div>
+
+                {snippets.length === 0 && (
+                  <div style={{ padding: "12px 14px", background: "rgba(127,119,221,.05)", border: "1px dashed rgba(127,119,221,.3)", borderRadius: 10, fontSize: 12, color: "rgba(180,210,255,.6)", textAlign: "center", marginBottom: 10 }}>
+                    Nog geen fragmenten. Voeg er een toe — bijvoorbeeld je IBAN, BTW-nummer of merkkleuren.
+                  </div>
+                )}
+
+                {snippets.map((s) => (
+                  <div key={s.key} style={{ padding: "10px 12px", marginBottom: 6, background: "rgba(127,119,221,.06)", border: "1px solid rgba(127,119,221,.22)", borderRadius: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, color: "#B3ADEE", fontWeight: 700, flex: 1 }}>{s.label}</span>
+                      <span style={{ fontSize: 9, color: "rgba(180,210,255,.5)", padding: "1px 6px", background: "rgba(127,119,221,.15)", borderRadius: 4 }}>{s.category}</span>
+                      <button onClick={() => deleteSnippet(s.key)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(255,143,163,.7)", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+                    </div>
+                    <div style={{ fontSize: 12, color: "rgba(220,238,255,.9)", whiteSpace: "pre-wrap", fontFamily: s.category === "kleur" || s.category === "code" ? "monospace" : "inherit", maxHeight: 120, overflow: "auto" }}>{s.value}</div>
+                  </div>
+                ))}
+
+                <SnippetAddForm onAdd={saveSnippet} />
+              </div>
+
+              {/* FILES */}
+              <div style={{ paddingTop: 18, borderTop: "1px solid rgba(56,230,255,.1)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 16 }}>📎</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: ".5px" }}>Bestanden</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2 }}>Riders, handleiding, logo, handtekening</div>
+                  </div>
+                </div>
+
+                {!blobConfigured && (
+                  <div style={{ padding: "12px 14px", background: "rgba(239,159,39,.08)", border: "1px solid rgba(239,159,39,.3)", borderRadius: 10, marginBottom: 10, fontSize: 12, color: "rgba(220,238,255,.85)", lineHeight: 1.5 }}>
+                    <div style={{ color: AMBER, fontWeight: 700, marginBottom: 4 }}>⚠️ Vercel Blob nog niet gekoppeld</div>
+                    Bestanden uploaden vereist Vercel Blob Storage. Ga naar je Vercel-project → tabblad <strong>Storage</strong> → <strong>Create Database</strong> → kies <strong>Blob</strong>. Vercel voegt automatisch de juiste environment-variable toe. Redeploy daarna.
+                  </div>
+                )}
+
+                {docFiles.length === 0 && blobConfigured && (
+                  <div style={{ padding: "12px 14px", background: "rgba(56,230,255,.04)", border: "1px dashed rgba(56,230,255,.25)", borderRadius: 10, fontSize: 12, color: "rgba(180,210,255,.6)", textAlign: "center", marginBottom: 10 }}>
+                    Nog geen bestanden. Upload bijvoorbeeld je rider, handleiding of logo.
+                  </div>
+                )}
+
+                {docFiles.map((f) => (
+                  <div key={f.id} style={{ padding: "10px 12px", marginBottom: 6, background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.18)", borderRadius: 10, display: "flex", gap: 10, alignItems: "center" }}>
+                    <span style={{ fontSize: 20 }}>{f.contentType?.startsWith("image") ? "🖼" : f.contentType?.includes("pdf") ? "📄" : "📎"}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: "#E8F1FF", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.label}</div>
+                      <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 2 }}>{f.filename} · {Math.round(f.size / 1024)} KB · {f.category}</div>
+                    </div>
+                    <a href={f.downloadUrl || f.url} target="_blank" rel="noopener noreferrer" title="Openen" style={{ color: CYAN, textDecoration: "none", padding: "4px 8px", border: "1px solid rgba(56,230,255,.3)", borderRadius: 6, fontSize: 11 }}>open</a>
+                    <button onClick={() => deleteDocFile(f.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(255,143,163,.7)", cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+
+                {blobConfigured && <FileUploadForm onUpload={uploadDocFile} />}
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
+
       {showSettings && (
         <div onClick={() => setShowSettings(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
@@ -3754,6 +4051,25 @@ function Nova({ token, onLogout }) {
                 )}
               </div>
 
+              {/* BEDRIJFSDOCUMENTEN */}
+              <div style={{ marginBottom: 22, paddingTop: 18, borderTop: "1px solid rgba(56,230,255,.1)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 16 }}>📁</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: ".5px" }}>Bedrijfsdocumenten</span>
+                </div>
+                <button
+                  onClick={() => { setShowSettings(false); setShowDocs(true); }}
+                  style={{ width: "100%", border: "1px solid rgba(56,230,255,.3)", borderRadius: 8, padding: "10px 12px", background: "rgba(56,230,255,.05)", color: CYAN, fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10 }}
+                >
+                  <span style={{ fontSize: 14 }}>📂</span>
+                  <div style={{ flex: 1 }}>
+                    <div>Beheer documenten en fragmenten</div>
+                    <div style={{ fontSize: 10, color: "rgba(180,210,255,.55)", marginTop: 2, fontWeight: 400 }}>{snippets.length} fragmenten · {docFiles.length} bestanden</div>
+                  </div>
+                  <span style={{ fontSize: 14, color: "rgba(180,210,255,.5)" }}>›</span>
+                </button>
+              </div>
+
               {/* MICROFOON */}
               <div style={{ marginBottom: 22, paddingTop: 18, borderTop: "1px solid rgba(56,230,255,.1)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -3867,8 +4183,9 @@ function Nova({ token, onLogout }) {
                 <div style={{ padding: 12, textAlign: "center", color: CYAN, fontSize: 12 }}>Bezig met testen...</div>
               )}
             </div>
-            <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,.06)", display: "flex", gap: 8 }}>
-              <button onClick={runMicDiagnose} disabled={micDiag?.running} style={{ border: "1px solid rgba(56,230,255,.4)", borderRadius: 8, padding: "8px 14px", background: "rgba(56,230,255,.06)", color: CYAN, fontSize: 12, fontWeight: 600, cursor: micDiag?.running ? "wait" : "pointer", opacity: micDiag?.running ? 0.5 : 1 }}>🔄 Opnieuw testen</button>
+            <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,.06)", display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={() => runMicDiagnose(true)} disabled={micDiag?.running} style={{ border: "1px solid rgba(56,230,255,.4)", borderRadius: 8, padding: "8px 12px", background: "rgba(56,230,255,.06)", color: CYAN, fontSize: 11, fontWeight: 600, cursor: micDiag?.running ? "wait" : "pointer", opacity: micDiag?.running ? 0.5 : 1 }}>🔄 Test met ruisonderdrukking</button>
+              <button onClick={() => runMicDiagnose(false)} disabled={micDiag?.running} style={{ border: "1px solid rgba(239,159,39,.4)", borderRadius: 8, padding: "8px 12px", background: "rgba(239,159,39,.06)", color: AMBER, fontSize: 11, fontWeight: 600, cursor: micDiag?.running ? "wait" : "pointer", opacity: micDiag?.running ? 0.5 : 1 }}>🔄 Test zonder opties</button>
               <div style={{ flex: 1 }} />
               <button onClick={() => setShowMicDiag(false)} style={{ border: "1px solid rgba(180,210,255,.2)", borderRadius: 8, padding: "8px 14px", background: "transparent", color: "rgba(220,238,255,.85)", fontSize: 12, cursor: "pointer" }}>Sluiten</button>
             </div>
