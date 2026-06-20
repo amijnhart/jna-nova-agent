@@ -643,6 +643,11 @@ function Nova({ token, onLogout }) {
     try { return localStorage.getItem("nova_always_listen") === "1"; } catch { return false; }
   });
   const [micMuted, setMicMuted] = useState(false); // tijdelijk dempen tijdens always-listen
+  // Ref houdt de actuele micMuted-waarde bij voor gebruik in de VAD-loop die
+  // anders een stale closure heeft. Zonder deze ref blijft mute niet werken
+  // omdat de animatieframe-callback de oude waarde blijft zien.
+  const micMutedRef = useRef(false);
+  useEffect(() => { micMutedRef.current = micMuted; }, [micMuted]);
   const [micLevel, setMicLevel] = useState(0); // huidig volumeniveau 0-1, voor visuele feedback
   const [actions, setActions] = useState([]);
   const [idleStars, setIdleStars] = useState([]);
@@ -680,6 +685,10 @@ function Nova({ token, onLogout }) {
   const [docFiles, setDocFiles] = useState([]);
   const [blobConfigured, setBlobConfigured] = useState(false);
   const [blobDiagDetail, setBlobDiagDetail] = useState(null); // {foundUnder, allBlobEnvVars, hasOidcToken, hasBlobStoreId}
+  // Financieel overzicht: bankstand, BTW, IB-schatting, besteedbaar
+  const [financials, setFinancials] = useState(null);
+  const [financialsLoading, setFinancialsLoading] = useState(false);
+  const [showFinancials, setShowFinancials] = useState(false);
   const [showDocs, setShowDocs] = useState(false);
   // Mic-diagnose paneel om iOS Safari problemen op te sporen
   const [showMicDiag, setShowMicDiag] = useState(false);
@@ -924,6 +933,21 @@ function Nova({ token, onLogout }) {
         setMessages((p) => [...p, { role: "assistant", content: `⚠️ Let op: de opslag is op dit moment niet persistent. ${probleem}. Verbeterpunten, kalender-items en catalogus blijven niet bewaard tussen sessies. Klik op het 💾-icoon in de header voor details over hoe dit op te lossen.` }]);
       }
 
+      // Microfoon-permissie check: vraag vriendelijk om toestemming bij eerste login.
+      // Op die manier hoeft de gebruiker niet zelf in instellingen te grasduinen om
+      // de browser-pop-up te activeren. We tonen alleen op desktop waar het zinvol is;
+      // op iOS Safari is dit toch een andere weg.
+      try {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SR && navigator.permissions && navigator.permissions.query) {
+          const p = await navigator.permissions.query({ name: "microphone" });
+          if (p.state === "prompt" || p.state === "default") {
+            // Nog niet gevraagd of niet expliciet beslist. Toon een vriendelijk aanbod.
+            setMessages((p2) => [...p2, { role: "assistant", content: "Ik kan met je praten als je dat wilt — vraag stelt, ik antwoord met spraak. Geef je microfoon-toestemming als je dit wilt activeren." , offerMicPermission: true }]);
+          }
+        }
+      } catch (e) { void e; /* permissions API niet ondersteund, geen ramp */ }
+
       // Zet relevante acties rond de cirkel (zonder bestaande te verwijderen).
       const acts = [];
       if (imps.length) acts.push("Vat de verbeterpunten samen");
@@ -937,6 +961,30 @@ function Nova({ token, onLogout }) {
   }, []);
 
   // Notificaties: vraag permissie en sla voorkeur op
+  // Vraag actief microfoon-toestemming. Triggert browser-pop-up direct.
+  // Wordt aangeroepen via de welkom-knop "🎙 Sta microfoon toe".
+  async function requestMicPermission() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMessages((m) => [...m, { role: "assistant", content: "⚠️ Microfoon-API niet beschikbaar in deze browser." }]);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+      stream.getTracks().forEach((t) => t.stop());
+      setMessages((m) => [...m, { role: "assistant", content: "✓ Microfoon-toestemming gegeven. Klik op de mic-knop bij de chat om te praten, of zet 'Continu luisteren' aan in instellingen voor handsfree gebruik." }]);
+      setToast({ icon: "🎙", text: "Microfoon toegestaan", color: "#5DCAA5" });
+      setTimeout(() => setToast(null), 2500);
+    } catch (err) {
+      const reason = err.name === "NotAllowedError" ? "geweigerd" :
+                     err.name === "NotFoundError" ? "geen microfoon gevonden" :
+                     err.name === "NotReadableError" ? "in gebruik door andere app" :
+                     err.message || "onbekend";
+      setMessages((m) => [...m, { role: "assistant", content: `⚠️ Microfoon-toestemming niet verkregen (${reason}). Je kunt het later opnieuw proberen via instellingen.` }]);
+    }
+  }
+
   async function toggleNotifications() {
     if (!notifEnabled) {
       // Aanvragen
@@ -1035,6 +1083,27 @@ function Nova({ token, onLogout }) {
     return () => { stopped = true; clearInterval(iv); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, notifEnabled]);
+
+  async function loadFinancials(force = false) {
+    if (financialsLoading) return;
+    if (financials && !force) return;
+    setFinancialsLoading(true);
+    try {
+      const r = await fetch("/api/boeksy?action=financials", { headers: { Authorization: "Bearer " + token } });
+      const d = await r.json();
+      if (r.ok) setFinancials(d);
+      else setFinancials({ error: d.error || "Kon financieel overzicht niet ophalen" });
+    } catch (e) {
+      setFinancials({ error: e.message });
+    } finally {
+      setFinancialsLoading(false);
+    }
+  }
+
+  function openFinancials() {
+    setShowFinancials(true);
+    loadFinancials();
+  }
 
   async function addImprovement(text) {
     try {
@@ -1670,8 +1739,10 @@ function Nova({ token, onLogout }) {
         setMicLevel(rms);
 
         const st = vadStateRef.current;
-        // Niet luisteren als gedempt, NOVA praat, of we al bezig zijn
-        if (!micMuted && !speaking && !st.currentlyRecognizing) {
+        // Niet luisteren als gedempt, NOVA praat, of we al bezig zijn.
+        // micMutedRef.current geeft altijd de actuele waarde - state via closure
+        // gaf stale data en mute werkte daarom niet.
+        if (!micMutedRef.current && !speaking && !st.currentlyRecognizing) {
           if (rms > VOICE_THRESHOLD) {
             st.voiceCount++;
             st.silenceCount = 0;
@@ -2018,6 +2089,17 @@ function Nova({ token, onLogout }) {
     if (alwaysListen) {
       setMicMuted((m) => {
         const next = !m;
+        micMutedRef.current = next; // direct bijwerken zodat VAD-loop het meteen ziet
+        if (next) {
+          // Bij dempen: stop een eventueel lopende recognition zodat huidige spraak
+          // niet alsnog wordt verstuurd na een 1-seconde pauze.
+          try { recognitionRef.current?.stop(); } catch (e) { void e; }
+          if (vadStateRef.current) {
+            vadStateRef.current.currentlyRecognizing = false;
+            vadStateRef.current.voiceCount = 0;
+          }
+          setListening(false);
+        }
         setStatus(next ? "Gedempt - klik nogmaals om mij weer te laten luisteren" : "Microfoon staat aan, ik luister naar je stem");
         return next;
       });
@@ -2320,6 +2402,18 @@ function Nova({ token, onLogout }) {
       return;
     }
 
+    // Financieel-vraag detecteren: bankstand, BTW, IB, besteedbaar
+    const finMatch = lower.match(/\b(bankstand|wat\s+staat\s+er\s+op\s+de\s+bank|hoeveel\s+(staat|heb)\s+ik\s+(op\s+de\s+bank|nog|in\s+kas)|btw|omzetbelasting|inkomstenbelasting|\bib\b|besteedbaar|hoeveel\s+kan\s+ik\s+uitgeven|hoeveel\s+is\s+vrij|reservering)\b/);
+    if (finMatch) {
+      setMessages((m) => [...m, { role: "user", content: text }]);
+      setInput("");
+      openFinancials();
+      const intro = "Ik open je financieel overzicht. Bankstand, BTW per periode en geschatte IB worden voor je berekend uit Boeksy.";
+      setMessages((m) => [...m, { role: "assistant", content: intro }]);
+      speak(intro);
+      return;
+    }
+
     const next = [...messages, { role: "user", content: text }];
     setMessages(next); setInput(""); setBusy(true); setActions([]); setStatus("NOVA denkt na...");
     try {
@@ -2550,11 +2644,11 @@ function Nova({ token, onLogout }) {
           {orbMenuOpen && actions.length === 0 && tasks.length === 0 && (() => {
             const items = [
               { label: "📊 Dashboard", action: () => { setShowDashboard(true); setOrbMenuOpen(false); } },
+              { label: "💰 Financieel", action: () => { openFinancials(); setOrbMenuOpen(false); } },
               { label: "Wat staat er morgen?", action: () => { sendMessage("Wat staat er morgen?"); setOrbMenuOpen(false); } },
               { label: "Maak een post", action: () => { sendMessage("Maak een post"); setOrbMenuOpen(false); } },
               { label: "Open boekhouding", action: () => { setShowBoeksy(true); setOrbMenuOpen(false); } },
               { label: "Open kalender", action: () => { setShowCalendar(true); setOrbMenuOpen(false); } },
-              { label: "Wat kun je voor me doen?", action: () => { sendMessage("Wat kun je voor me doen?"); setOrbMenuOpen(false); } },
             ];
             return items.map((it, i) => {
               // Plaats ze in een halve cirkel onder de orb, gelijk verdeeld
@@ -2770,7 +2864,17 @@ function Nova({ token, onLogout }) {
 
         <div className="nova-chat-area" style={{ flex: "0 0 300px", width: 300, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(56,230,255,.1)", minHeight: 480, maxHeight: "calc(100vh - 70px)", minWidth: 0 }}>
           <div ref={scrollRef} className="nova-scroll" style={{ flex: "1 1 0", overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
-            {messages.map((m, i) => (<div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "88%", padding: "10px 14px", borderRadius: m.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px", background: m.role === "user" ? `linear-gradient(135deg, ${PURPLE}, #5A52B5)` : "rgba(56,230,255,.08)", border: m.role === "user" ? "none" : "1px solid rgba(56,230,255,.2)", fontSize: 13, lineHeight: 1.5, color: m.role === "user" ? "#fff" : "#DCEEFF", whiteSpace: "pre-wrap" }}>{m.content}</div>))}
+            {messages.map((m, i) => (
+              <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "88%", display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ padding: "10px 14px", borderRadius: m.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px", background: m.role === "user" ? `linear-gradient(135deg, ${PURPLE}, #5A52B5)` : "rgba(56,230,255,.08)", border: m.role === "user" ? "none" : "1px solid rgba(56,230,255,.2)", fontSize: 13, lineHeight: 1.5, color: m.role === "user" ? "#fff" : "#DCEEFF", whiteSpace: "pre-wrap" }}>{m.content}</div>
+                {m.offerMicPermission && (
+                  <button
+                    onClick={requestMicPermission}
+                    style={{ alignSelf: "flex-start", border: `1px solid ${CYAN}66`, borderRadius: 10, padding: "8px 14px", background: "rgba(56,230,255,.1)", color: CYAN, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                  >🎙 Sta microfoon toe</button>
+                )}
+              </div>
+            ))}
             {busy && (<div style={{ alignSelf: "flex-start", padding: "12px 16px", borderRadius: "14px 14px 14px 4px", background: "rgba(56,230,255,.08)", border: "1px solid rgba(56,230,255,.2)", display: "flex", gap: 5 }}>{[0, 1, 2].map((d) => (<span key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: CYAN, animation: `pulse 1s ${d * 0.2}s infinite` }} />))}</div>)}
           </div>
           <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(56,230,255,.1)", alignItems: "center" }}>
@@ -3566,6 +3670,142 @@ function Nova({ token, onLogout }) {
         );
       })()}
 
+      {showFinancials && (() => {
+        const fmt = (n) => n == null ? "—" : "€ " + Math.round(n).toLocaleString("nl-NL");
+        const errBox = financials?.error ? (
+          <div style={{ padding: "12px 14px", background: "rgba(255,107,138,.1)", border: "1px solid rgba(255,143,163,.4)", borderRadius: 10, marginBottom: 14, fontSize: 12, color: "#FF8FA3" }}>{financials.error}</div>
+        ) : null;
+
+        return (
+          <div onClick={() => setShowFinancials(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 32, padding: 20 }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "min(680px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}66`, borderRadius: 16, overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${CYAN}33` }}>
+                <span style={{ fontSize: 22 }}>📊</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Financieel overzicht</div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Bankstand, BTW, IB-schatting · afgeleid uit Boeksy</div>
+                </div>
+                <button onClick={() => loadFinancials(true)} disabled={financialsLoading} title="Opnieuw berekenen" style={{ background: "transparent", border: `1px solid ${CYAN}55`, color: CYAN, borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: financialsLoading ? "wait" : "pointer", marginRight: 6 }}>{financialsLoading ? "⏳" : "🔄"}</button>
+                <button onClick={() => setShowFinancials(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px" }}>×</button>
+              </div>
+              <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+                {financialsLoading && !financials && (
+                  <div style={{ padding: 30, textAlign: "center", color: "rgba(180,210,255,.55)", fontSize: 13 }}>Berekenen uit boekhouding...</div>
+                )}
+                {errBox}
+
+                {financials && !financials.error && (
+                  <>
+                    {/* BESTEEDBAAR - hoofdkaart */}
+                    <div style={{ padding: "16px 18px", marginBottom: 16, background: "linear-gradient(135deg, rgba(56,230,255,.08), rgba(127,119,221,.08))", border: `1px solid ${CYAN}40`, borderRadius: 12 }}>
+                      <div style={{ fontSize: 11, color: CYAN, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 6 }}>💰 Vrij te besteden (geschat)</div>
+                      <div style={{ fontSize: 28, color: financials.besteedbaar?.besteedbaar !== null && financials.besteedbaar.besteedbaar >= 0 ? "#5DCAA5" : "#FF8FA3", fontWeight: 800, lineHeight: 1 }}>
+                        {fmt(financials.besteedbaar?.besteedbaar)}
+                      </div>
+                      <div style={{ fontSize: 11, color: "rgba(180,210,255,.65)", marginTop: 6, lineHeight: 1.5 }}>
+                        Bank {fmt(financials.besteedbaar?.bankSaldo)} — BTW reservering {fmt(financials.besteedbaar?.minBtw)} — IB geprojecteerd {fmt(financials.besteedbaar?.minIbGeprojecteerd)}
+                      </div>
+                    </div>
+
+                    {/* BANKSTAND */}
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, color: "#5DCAA5", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>🏦 Bankstand</div>
+                      {financials.bank?.saldo !== null ? (
+                        <div style={{ padding: "12px 14px", background: "rgba(29,158,117,.07)", border: "1px solid rgba(29,158,117,.25)", borderRadius: 10 }}>
+                          <div style={{ fontSize: 22, color: "#5DCAA5", fontWeight: 700 }}>{fmt(financials.bank.saldo)}</div>
+                          {financials.bank.accounts && financials.bank.accounts.length > 0 && (
+                            <div style={{ marginTop: 8 }}>
+                              {financials.bank.accounts.map((a, i) => (
+                                <div key={i} style={{ display: "flex", gap: 8, fontSize: 11, color: "rgba(220,238,255,.75)", padding: "3px 0" }}>
+                                  <span style={{ fontFamily: "monospace", color: "rgba(180,210,255,.55)", minWidth: 50 }}>{a.code}</span>
+                                  <span style={{ flex: 1 }}>{a.name}</span>
+                                  <span>{fmt(a.saldo)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ padding: "10px 12px", background: "rgba(239,159,39,.07)", border: "1px solid rgba(239,159,39,.25)", borderRadius: 8, fontSize: 12, color: "rgba(220,238,255,.8)" }}>
+                          {financials.bank?.reason || "Bankstand kon niet bepaald worden"}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* BTW */}
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📋 BTW per periode</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                        {[
+                          { label: "Deze maand", data: financials.btw?.maand },
+                          { label: "Lopend kwartaal", data: financials.btw?.kwartaal },
+                          { label: "Dit jaar", data: financials.btw?.jaar },
+                        ].map((c, i) => (
+                          <div key={i} style={{ padding: "10px 12px", background: "rgba(239,159,39,.06)", border: "1px solid rgba(239,159,39,.22)", borderRadius: 8 }}>
+                            <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)", marginBottom: 4 }}>{c.label}</div>
+                            <div style={{ fontSize: 15, color: AMBER, fontWeight: 700 }}>{fmt(c.data?.teBetalen)}</div>
+                            <div style={{ fontSize: 9, color: "rgba(180,210,255,.5)", marginTop: 4, lineHeight: 1.4 }}>
+                              In {fmt(c.data?.uitgaand)}<br/>Uit {fmt(c.data?.inkomend)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {financials.btw?.jaar?.reason && (
+                        <div style={{ fontSize: 11, color: AMBER, marginTop: 6, lineHeight: 1.4 }}>⚠️ {financials.btw.jaar.reason}</div>
+                      )}
+                    </div>
+
+                    {/* IB SCHATTING */}
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, color: PURPLE, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📈 Inkomstenbelasting (schatting)</div>
+                      <div style={{ padding: "12px 14px", background: "rgba(127,119,221,.07)", border: "1px solid rgba(127,119,221,.25)", borderRadius: 10 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
+                          <div>
+                            <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)" }}>Winst dit jaar (YTD)</div>
+                            <div style={{ fontSize: 15, color: "#E8F1FF", fontWeight: 600 }}>{fmt(financials.ib?.ytdWinst)}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)" }}>Projectie jaarwinst</div>
+                            <div style={{ fontSize: 15, color: "#B3ADEE", fontWeight: 600 }}>{fmt(financials.ib?.geprojecteerdeJaarwinst)}</div>
+                          </div>
+                        </div>
+                        <div style={{ paddingTop: 10, borderTop: "1px solid rgba(127,119,221,.15)" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
+                            <span>Zelfstandigenaftrek</span>
+                            <span>- {fmt(financials.ib?.ibGeprojecteerd?.zelfstandigenaftrek)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
+                            <span>MKB-winstvrijstelling (12,03%)</span>
+                            <span>- {fmt(financials.ib?.ibGeprojecteerd?.mkbVrijstelling)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
+                            <span>Belastbare winst</span>
+                            <span>{fmt(financials.ib?.ibGeprojecteerd?.belastbareWinst)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
+                            <span>Heffingskortingen</span>
+                            <span>- {fmt(financials.ib?.ibGeprojecteerd?.heffingskortingen)}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 700, marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(127,119,221,.2)", color: PURPLE }}>
+                            <span>Geschatte IB jaar 2026</span>
+                            <span>{fmt(financials.ib?.ibGeprojecteerd?.totalTax)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* WAARSCHUWING */}
+                    <div style={{ padding: "10px 12px", background: "rgba(56,230,255,.04)", border: "1px solid rgba(56,230,255,.2)", borderRadius: 8, fontSize: 11, color: "rgba(180,210,255,.75)", lineHeight: 1.5 }}>
+                      <strong style={{ color: CYAN }}>Schatting, geen aangifte.</strong> Cijfers zijn afgeleid uit Boeksy-boekhouding op basis van Nederlandse 2026-tarieven (zelfstandigenaftrek €1.200, MKB-vrijstelling 12,03%, schijven 35,82% / 37,48% / 49,50%). Werkelijke aangifte hangt af van factoren die we niet kennen (partner, hypotheek, toeslagen). Raadpleeg je accountant.
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showBoeksy && boeksy && (
         <div onClick={() => setShowBoeksy(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 26, padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(720px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: "1px solid rgba(29,158,117,.3)", borderRadius: 16, overflow: "hidden" }}>
@@ -3575,6 +3815,7 @@ function Nova({ token, onLogout }) {
                 <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Boekhouding (Boeksy)</div>
                 <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Live alleen-lezen koppeling · klanten, facturen, offertes, W&amp;V</div>
               </div>
+              <button onClick={openFinancials} title="Bankstand, BTW, IB-schatting" style={{ background: "rgba(56,230,255,.1)", border: `1px solid ${CYAN}55`, color: CYAN, borderRadius: 8, padding: "6px 12px", fontSize: 11, cursor: "pointer", fontWeight: 600, marginRight: 6 }}>📊 Financieel</button>
               <button onClick={() => setShowBoeksy(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px", minWidth: 32, minHeight: 32 }}>×</button>
             </div>
             <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
