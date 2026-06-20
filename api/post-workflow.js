@@ -28,13 +28,82 @@ async function callAgent(client, system, user) {
     .trim();
 }
 
-const STRATEGIE = "Je bent de Marketing Director van JnA Events. Maak een KORT, helder concept voor de gevraagde post (max 8 zinnen totaal). Lever vier korte blokken: 'Hoek:' (1-2 zinnen waarom dit werkt), 'Doelgroep:' (1 zin), 'Gewenste actie:' (1 zin), 'Hoe het eruit ziet:' (2-3 zinnen die kort beschrijven wat de kijker te zien krijgt - sfeer, beeld, beweging). Schrijf in spreektaal want het wordt mogelijk voorgelezen. Geen markdown, geen sterretjes, geen emoji.";
+// MERK-KENNIS — komt in elke agent-prompt zodat ze JnA Events kennen.
+// Dit is variant 1 van "betere agents": uitgebreide context per oproep.
+const JNA_MERK = `
+OVER JNA EVENTS
+- Eenmanszaak (Tilburg), DJ + apparatuur-verhuur voor bruiloften, bedrijfsfeesten, verjaardagen en feesten
+- Eigen materieel: Pioneer DDJ-FLX10, lichtbrug 3m met 4 moving heads, RGB Ibiza 1000 laser, 2 ground PARs, 2 draadloze PARs, rookmachine, geluidssysteem 2x18" subs + 2x15" tops
+- Stijl: professioneel maar warm, gericht op een onvergetelijke ervaring
+- Niet club-DJ-pretenties, wél hoogwaardige sfeer op locatie
+- Doelgroep: bruidsparen, eventorganisatoren, bedrijven met personeelsfeesten in Brabant/regio
 
-const COPYWRITER = "Je bent de Content Creator van JnA Events. Schrijf op basis van het meegegeven concept een sterke social media caption in het Nederlands. Lever drie blokken: 'Hook:' (1 zin die scrollers stopt), 'Caption:' (max 4 zinnen, levendig), 'Hashtags:' (5-8 relevante tags zonder hekjes, gescheiden door spaties). Geen markdown.";
+TONE OF VOICE
+- Spreektaal, persoonlijk, geen jargon
+- Enthousiast over de sfeer, niet over de techniek (techniek is middel)
+- Korte zinnen, levendig
+- Geen overdreven sterretjes of emoji-spam
+- Werk in 'je'-vorm naar de lezer toe`;
 
-const VISUAL = "Je bent de Visual Director van JnA Events. Bedenk op basis van het meegegeven concept DRIE concrete visual-concepten. Voor elk: 'Concept N:' (1 zin idee), 'Prompt:' (gedetailleerde Engelse image-generation prompt, fotografisch, met licht, hoek, sfeer en compositie - geschikt voor gpt-image-1). Geen markdown.";
+const VISUAL_STIJL = `
+VISUELE STIJL VOOR BEELDEN EN VIDEO
+- Cinematic, sfeervol, low-light met statement-lichteffecten
+- Veel rook + kleurig licht (paars, cyaan, amber)
+- Camera laag bij de dansvloer of vanaf de DJ-booth POV
+- Mensen in beweging - geen geposeerde foto's
+- Avond en nacht setting, behalve bij bruiloft-overdag content
+- Lichtbrug, lasers en moving heads zijn herkenbare elementen van JnA's setup
+- Kleurpalet match: turquoise (#09A5CB) en donker (#093239) voor merk-consistente captions/overlays`;
 
-const REGIE = "Je bent de Video Director van JnA Events. Maak op basis van het meegegeven concept een uitvoerbaar regie-script voor een korte video (15-30 sec). Lever: 'Shotlist:' (4-6 shots, elk 1 regel: 'Shot 1: ...'), 'Voice-over of tekst-op-beeld:' (exacte zinnen). Schrijf zo dat een telefooncamera dit kan filmen. Geen markdown.";
+const STRATEGIE = `Je bent de Marketing Director van JnA Events.
+${JNA_MERK}
+
+Maak een KORT, helder concept voor de gevraagde post (max 8 zinnen totaal). Lever vier korte blokken:
+- 'Hoek:' (1-2 zinnen waarom dit werkt en welk gevoel je triggert)
+- 'Doelgroep:' (1 zin - specifiek, niet 'iedereen')
+- 'Gewenste actie:' (1 zin - liken/volgen/DM-en/boeken)
+- 'Hoe het eruit ziet:' (2-3 zinnen die kort beschrijven wat de kijker te zien krijgt - sfeer, beeld, beweging)
+
+Schrijf in spreektaal want het wordt mogelijk voorgelezen. Geen markdown, geen sterretjes, geen emoji.
+Denk vanuit: 'wat zou een bruidspaar of bedrijfsfeest-organisator overtuigen om JnA te boeken?'`;
+
+const COPYWRITER = `Je bent de Content Creator van JnA Events.
+${JNA_MERK}
+
+Schrijf op basis van het meegegeven concept een sterke social media caption in het Nederlands. Lever drie blokken:
+- 'Hook:' (1 zin die scrollers stopt - meestal een spannende observatie, vraag, of belofte. GEEN 'check dit!' of 'kijk eens')
+- 'Caption:' (max 4 zinnen, levendig, persoonlijk - lijkt alsof Jordi het zelf zegt)
+- 'Hashtags:' (5-8 relevante tags zonder hekjes, gescheiden door spaties)
+
+Mix algemene hashtags (bruiloft, feest, event) met lokale (Tilburg, Brabant, Noord-Brabant) en niche (DJlife, weddingdj). Geen markdown.`;
+
+const VISUAL = `Je bent de Visual Director van JnA Events.
+${JNA_MERK}
+${VISUAL_STIJL}
+
+Bedenk op basis van het meegegeven concept DRIE concrete visual-concepten. Voor elk:
+- 'Concept N:' (1 zin idee in het Nederlands)
+- 'Prompt:' (gedetailleerde Engelse image-generation prompt, fotografisch, met licht, hoek, sfeer en compositie - geschikt voor gpt-image-1)
+
+In elke prompt:
+- specificeer cinematic lighting met colored stage lights
+- vermeld 'professional event photography' of 'concert photography style'
+- benoem licht-kleur, sfeer, beweging
+- voor bruiloft: warmer licht; voor club/feest: paars/cyaan
+- voor materieel-shots: detail van moving heads, lichtbrug of rookmachine in actie
+
+Geen markdown.`;
+
+const REGIE = `Je bent de Video Director van JnA Events.
+${JNA_MERK}
+${VISUAL_STIJL}
+
+Maak op basis van het meegegeven concept een uitvoerbaar regie-script voor een korte video (15-30 sec). Lever:
+- 'Shotlist:' (4-6 shots, elk 1 regel: 'Shot 1: [shot type] - [wat - bv close-up moving head, wide shot dansvloer] - [duur in sec]')
+- 'Voice-over of tekst-op-beeld:' (exacte zinnen, kort - max 2 regels per shot)
+- 'Muziek-suggestie:' (genre/stijl/BPM die past)
+
+Schrijf zo dat een telefooncamera dit kan filmen (iPhone met OIS). Geen drones tenzij specifiek voor outdoor. Geen markdown.`;
 
 export default async function handler(req, res) {
   const auth = req.headers.authorization || "";
@@ -47,7 +116,7 @@ export default async function handler(req, res) {
   if (!apiKey) return res.status(500).json({ error: "ANTHROPIC_API_KEY ontbreekt." });
 
   try {
-    const { phase, channel, topic, catalog, concept } = req.body || {};
+    const { phase, channel, topic, catalog, concept, snippets, eventContext } = req.body || {};
     if (!phase || !channel || !topic) return res.status(400).json({ error: "phase, channel en topic zijn verplicht" });
 
     const client = new Anthropic({ apiKey });
@@ -57,9 +126,23 @@ export default async function handler(req, res) {
         catalog.map((p) => "- " + p.name + (p.category ? " (" + p.category + ")" : "") + (p.description ? ": " + p.description : "")).join("\n")
       : "";
 
+    // Bedrijfssnippets: kleurpalet, tone-of-voice, NAW etc. die de gebruiker
+    // zelf heeft opgeslagen in de Documenten-module.
+    const snippetTekst = Array.isArray(snippets) && snippets.length
+      ? "\n\nAanvullende bedrijfsgegevens (door eigenaar opgegeven):\n" +
+        snippets.map((s) => `- ${s.label}: ${String(s.value).slice(0, 300)}`).join("\n")
+      : "";
+
+    // Event-context: als deze post bij een specifiek event hoort, geef datum + klant
+    const eventTekst = eventContext && typeof eventContext === "object"
+      ? `\n\nDeze post hoort bij een aankomend event op ${eventContext.date} voor ${eventContext.klant || "een klant"}${eventContext.subject ? ` (${eventContext.subject})` : ""}. Verwerk dat impliciet in de hoek (bijvoorbeeld: 'volgende week vrijdag op dit bedrijfsfeest...').`
+      : "";
+
+    const extraContext = catalogTekst + snippetTekst + eventTekst;
+
     // FASE 1: alleen Marketing Director
     if (phase === "concept") {
-      const briefing = `Kanaal: ${channel}\nOnderwerp: ${topic}${catalogTekst}`;
+      const briefing = `Kanaal: ${channel}\nOnderwerp: ${topic}${extraContext}`;
       const strategie = await callAgent(client, STRATEGIE, briefing);
       return res.status(200).json({ phase: "concept", strategie });
     }
@@ -67,7 +150,7 @@ export default async function handler(req, res) {
     // FASE 2: de drie productie-agents, parallel
     if (phase === "production") {
       if (!concept) return res.status(400).json({ error: "concept ontbreekt voor productie-fase" });
-      const briefing = `Kanaal: ${channel}\nOnderwerp: ${topic}\n\nGoedgekeurd concept van de Marketing Director:\n${concept}${catalogTekst}`;
+      const briefing = `Kanaal: ${channel}\nOnderwerp: ${topic}\n\nGoedgekeurd concept van de Marketing Director:\n${concept}${extraContext}`;
 
       const [copy, visual, regie] = await Promise.all([
         callAgent(client, COPYWRITER, briefing),
@@ -94,7 +177,7 @@ export default async function handler(req, res) {
 
       // De specialist herziet zijn werk
       const specialistSystem = role === "content" ? COPYWRITER : role === "visual" ? VISUAL : role === "video" ? REGIE : COPYWRITER;
-      const reviseInput = `Goedgekeurd concept van de Marketing Director:\n${concept}${catalogTekst}\n\nJe vorige opzet was:\n${currentOutput}\n\nDe gebruiker geeft de volgende feedback. Pas je werk daarop aan en lever de complete nieuwe versie in hetzelfde formaat als voorheen.\n\nFeedback: ${feedback}`;
+      const reviseInput = `Goedgekeurd concept van de Marketing Director:\n${concept}${extraContext}\n\nJe vorige opzet was:\n${currentOutput}\n\nDe gebruiker geeft de volgende feedback. Pas je werk daarop aan en lever de complete nieuwe versie in hetzelfde formaat als voorheen.\n\nFeedback: ${feedback}`;
       const newOutput = await callAgent(client, specialistSystem, reviseInput);
 
       // Als impact ook anderen raakt, herzien we hen ook (parallel)
@@ -103,7 +186,7 @@ export default async function handler(req, res) {
         const others = ["content", "visual", "video"].filter((r) => r !== role);
         const results = await Promise.all(others.map(async (otherRole) => {
           const sys = otherRole === "content" ? COPYWRITER : otherRole === "visual" ? VISUAL : REGIE;
-          const inp = `Goedgekeurd concept van de Marketing Director:\n${concept}${catalogTekst}\n\nEr is een wijziging doorgevoerd in het werk van de ${role}-specialist op basis van gebruikersfeedback: "${feedback}". Pas jouw werk hier op aan en lever de complete nieuwe versie. Marketing's analyse: ${impactCheck}`;
+          const inp = `Goedgekeurd concept van de Marketing Director:\n${concept}${extraContext}\n\nEr is een wijziging doorgevoerd in het werk van de ${role}-specialist op basis van gebruikersfeedback: "${feedback}". Pas jouw werk hier op aan en lever de complete nieuwe versie. Marketing's analyse: ${impactCheck}`;
           try { return [otherRole, await callAgent(client, sys, inp)]; }
           catch (e) { return [otherRole, null]; }
         }));

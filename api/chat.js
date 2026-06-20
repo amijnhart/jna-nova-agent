@@ -103,6 +103,31 @@ export default async function handler(req, res) {
       if (boeksy.profitLoss) {
         blok += `\n\nWinst- en verliesrekening lopend kwartaal (samengevat): ${JSON.stringify(boeksy.profitLoss).slice(0, 600)}`;
       }
+      // Financiële cijfers: bankstand, BTW per kwartaal/jaar. Komen automatisch mee
+      // bij elke login zodat NOVA proactief mee kan denken zonder dat de gebruiker
+      // het Financieel-paneel hoeft te openen.
+      if (boeksy.financials) {
+        const f = boeksy.financials;
+        let finBlok = "\n\nFINANCIËLE POSITIE (afgeleid uit Boeksy boekhouding):";
+        if (f.bank) {
+          if (f.bank.saldo !== null && f.bank.saldo !== undefined) {
+            finBlok += `\n- Bankstand totaal: € ${f.bank.saldo.toLocaleString("nl-NL", { maximumFractionDigits: 0 })}`;
+            if (Array.isArray(f.bank.accounts) && f.bank.accounts.length > 1) {
+              finBlok += " (verdeeld over " + f.bank.accounts.length + " rekeningen)";
+            }
+          } else if (f.bank.reason) {
+            finBlok += `\n- Bankstand: niet bepaalbaar - ${f.bank.reason}`;
+          }
+        }
+        if (f.btwKwartaal) {
+          finBlok += `\n- BTW lopend kwartaal: te betalen € ${(f.btwKwartaal.teBetalen || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })} (verkoop-BTW € ${(f.btwKwartaal.uitgaand || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })} minus voorbelasting € ${(f.btwKwartaal.inkomend || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })})`;
+        }
+        if (f.btwJaar) {
+          finBlok += `\n- BTW dit jaar (YTD): te betalen € ${(f.btwJaar.teBetalen || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })}`;
+        }
+        finBlok += "\n\nWanneer de gebruiker vraagt over geld, bankstand, BTW, belasting of besteedbaar budget: gebruik deze cijfers. Dit zijn schattingen op basis van boekhoudkundige data, geen aangifte. Voor de volledige IB-berekening en besteedbaar-budget kan de gebruiker het Financieel-paneel openen via het quick-menu of door 'open financieel' te zeggen.";
+        blok += finBlok;
+      }
       if (Array.isArray(boeksy.events) && boeksy.events.length) {
         blok += `\n\nKomende events uit Boeksy (offertes/facturen met event_date) - dit zijn dagen waar JnA Events op locatie werkt en content kan maken:\n` + boeksy.events.slice(0, 15).map((e) => {
           const d = new Date(e.date);

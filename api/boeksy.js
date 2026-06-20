@@ -309,6 +309,28 @@ async function handleOverview(req, res) {
     result.followUps = followUps;
   }
 
+  // FINANCIALS LIGHT: bankstand, BTW lopend kwartaal en jaar.
+  // Dit zit standaard in overview zodat NOVA er actief over kan meedenken zonder
+  // dat de gebruiker eerst het Financieel-paneel hoeft te openen.
+  // De volledige IB-berekening blijft alleen in /financials om kosten te sparen.
+  try {
+    const ytdFrom = new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10);
+    const ytdTo = now.toISOString().slice(0, 10);
+    const [bank, vatQuarter, vatYear] = await Promise.allSettled([
+      calcBankBalance(),
+      calcVatPosition(from, to),
+      calcVatPosition(ytdFrom, ytdTo),
+    ]);
+    result.financials = {
+      bank: bank.status === "fulfilled" ? { saldo: bank.value.saldo, reason: bank.value.reason, accounts: bank.value.accounts } : null,
+      btwKwartaal: vatQuarter.status === "fulfilled" ? { uitgaand: vatQuarter.value.uitgaand, inkomend: vatQuarter.value.inkomend, teBetalen: vatQuarter.value.teBetalen, from, to } : null,
+      btwJaar: vatYear.status === "fulfilled" ? { uitgaand: vatYear.value.uitgaand, inkomend: vatYear.value.inkomend, teBetalen: vatYear.value.teBetalen, from: ytdFrom, to: ytdTo } : null,
+    };
+  } catch (err) {
+    // Niet fataal - rest van overview moet doorgaan
+    result.financialsError = err.message;
+  }
+
   return res.status(200).json(result);
 }
 
