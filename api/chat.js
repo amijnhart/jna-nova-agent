@@ -52,7 +52,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { messages, mode, integrations, voiceRate, emails, boeksy, lastViewed } = req.body;
+    const { messages, mode, integrations, voiceRate, emails, boeksy, lastViewed, snippets, files } = req.body;
     if (!Array.isArray(messages)) {
       return res.status(400).json({ error: "messages ontbreekt" });
     }
@@ -122,6 +122,25 @@ export default async function handler(req, res) {
     // Context: wat de gebruiker net heeft bekeken (verbeterpunt P)
     if (lastViewed && typeof lastViewed === "object") {
       system += `\n\nDe gebruiker heeft net bekeken: ${lastViewed.type} - ${lastViewed.label}. Verwijzingen als "die offerte" of "die mail" of "dat" mogen op dit item slaan tenzij context anders aangeeft. Detail: ${JSON.stringify(lastViewed.data).slice(0, 500)}`;
+    }
+
+    // Bedrijfsdocumenten: tekst-snippets (kleurpalet, NAW, BTW etc.)
+    if (Array.isArray(snippets) && snippets.length) {
+      let snipBlok = "\n\nBEDRIJFSGEGEVENS - gebruik deze bij visual-prompts, offertes, mails en alle communicatie:";
+      for (const s of snippets) {
+        snipBlok += `\n- ${s.label} (${s.category}): ${s.value}`;
+      }
+      system += snipBlok;
+    }
+
+    // Bedrijfsdocumenten: bestanden (PDF rider, handleiding, logo, handtekening)
+    if (Array.isArray(files) && files.length) {
+      let fileBlok = "\n\nBEDRIJFSDOCUMENTEN - deze bestanden zijn beschikbaar om naar klanten te sturen:";
+      for (const f of files) {
+        fileBlok += `\n- ${f.label} (${f.category}): ${f.filename}`;
+      }
+      fileBlok += "\n\nWanneer een klant om een rider, handleiding, logo of ander document vraagt: noem het op een aparte regel als: DOCUMENT: bestandsnaam | optionele toelichting. De gebruiker krijgt dan een knop om het document direct naar de klant te sturen.";
+      system += fileBlok;
     }
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
