@@ -679,6 +679,7 @@ function Nova({ token, onLogout }) {
   const [snippets, setSnippets] = useState([]);
   const [docFiles, setDocFiles] = useState([]);
   const [blobConfigured, setBlobConfigured] = useState(false);
+  const [blobDiagDetail, setBlobDiagDetail] = useState(null); // {foundUnder, allBlobEnvVars, hasOidcToken, hasBlobStoreId}
   const [showDocs, setShowDocs] = useState(false);
   // Mic-diagnose paneel om iOS Safari problemen op te sporen
   const [showMicDiag, setShowMicDiag] = useState(false);
@@ -828,6 +829,7 @@ function Nova({ token, onLogout }) {
       if (dFiles) {
         if (Array.isArray(dFiles.items)) setDocFiles(dFiles.items);
         if (typeof dFiles.blobConfigured === "boolean") setBlobConfigured(dFiles.blobConfigured);
+        if (dFiles.blobDiagnose) setBlobDiagDetail(dFiles.blobDiagnose);
       }
       if (d1 && Array.isArray(d1.items)) { imps = d1.items; setImprovements(d1.items); }
       if (d2) { inbox = d2; if (inbox.connected && Array.isArray(inbox.emails)) setEmails(inbox.emails); }
@@ -3893,8 +3895,43 @@ function Nova({ token, onLogout }) {
 
                 {!blobConfigured && (
                   <div style={{ padding: "12px 14px", background: "rgba(239,159,39,.08)", border: "1px solid rgba(239,159,39,.3)", borderRadius: 10, marginBottom: 10, fontSize: 12, color: "rgba(220,238,255,.85)", lineHeight: 1.5 }}>
-                    <div style={{ color: AMBER, fontWeight: 700, marginBottom: 4 }}>⚠️ Vercel Blob nog niet gekoppeld</div>
-                    Bestanden uploaden vereist Vercel Blob Storage. Ga naar je Vercel-project → tabblad <strong>Storage</strong> → <strong>Create Database</strong> → kies <strong>Blob</strong>. Vercel voegt automatisch de juiste environment-variable toe. Redeploy daarna.
+                    <div style={{ color: AMBER, fontWeight: 700, marginBottom: 6 }}>⚠️ Vercel Blob niet gedetecteerd</div>
+                    <div style={{ marginBottom: 8 }}>
+                      {blobDiagDetail && blobDiagDetail.allBlobEnvVars && blobDiagDetail.allBlobEnvVars.length > 0 ? (
+                        <>
+                          NOVA ziet wel deze Blob-variabelen in Vercel, maar geen daarvan eindigt op <code style={{ background: "rgba(239,159,39,.15)", padding: "1px 5px", borderRadius: 3 }}>BLOB_READ_WRITE_TOKEN</code>:
+                          <ul style={{ margin: "4px 0", paddingLeft: 20, fontFamily: "monospace", fontSize: 11 }}>
+                            {blobDiagDetail.allBlobEnvVars.map((v) => (<li key={v}>{v}</li>))}
+                          </ul>
+                          Stuur deze namen aan de developer, of hernoem in Vercel naar <code style={{ background: "rgba(239,159,39,.15)", padding: "1px 5px", borderRadius: 3 }}>BLOB_READ_WRITE_TOKEN</code>.
+                        </>
+                      ) : (
+                        <>
+                          Geen Blob env-vars gevonden in Vercel. Stappen:
+                          <ol style={{ margin: "4px 0", paddingLeft: 20 }}>
+                            <li>Vercel project → tabblad <strong>Storage</strong></li>
+                            <li>Bij je Blob store → <strong>Connect Project</strong></li>
+                            <li>Vink <strong>Production</strong> aan (cruciaal)</li>
+                            <li>Daarna tabblad <strong>Deployments</strong> → ... menu → <strong>Redeploy</strong></li>
+                          </ol>
+                        </>
+                      )}
+                    </div>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const r = await fetch("/api/documents?type=files", { headers: { Authorization: "Bearer " + token } });
+                          const d = await r.json();
+                          if (typeof d.blobConfigured === "boolean") setBlobConfigured(d.blobConfigured);
+                          if (d.blobDiagnose) setBlobDiagDetail(d.blobDiagnose);
+                          if (d.blobConfigured) {
+                            setToast({ icon: "✓", text: "Blob nu gekoppeld!", color: "#5DCAA5" });
+                            setTimeout(() => setToast(null), 2500);
+                          }
+                        } catch (e) { void e; }
+                      }}
+                      style={{ border: `1px solid ${AMBER}`, borderRadius: 6, padding: "5px 10px", background: "rgba(239,159,39,.1)", color: AMBER, fontSize: 11, cursor: "pointer", fontWeight: 600 }}
+                    >🔄 Opnieuw checken</button>
                   </div>
                 )}
 
