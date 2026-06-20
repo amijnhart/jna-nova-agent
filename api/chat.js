@@ -103,6 +103,19 @@ export default async function handler(req, res) {
       if (boeksy.profitLoss) {
         blok += `\n\nWinst- en verliesrekening lopend kwartaal (samengevat): ${JSON.stringify(boeksy.profitLoss).slice(0, 600)}`;
       }
+      // Boeksy-productencatalogus: standaard-diensten en -producten met prijzen.
+      // NOVA gebruikt deze bij offerte-opdrachten zodat ze niet zelf prijzen hoeft te raden.
+      if (Array.isArray(boeksy.boeksyProducts) && boeksy.boeksyProducts.length) {
+        let prodBlok = "\n\nBOEKSY PRODUCTENCATALOGUS - gebruik DEZE prijzen en omschrijvingen bij het maken van offertes:";
+        for (const p of boeksy.boeksyProducts.slice(0, 30)) {
+          const prijs = p.sales_price !== null ? `€ ${p.sales_price}` : "geen prijs";
+          const unit = p.unit ? ` per ${p.unit}` : "";
+          const btw = p.vat_rate !== null ? ` (BTW ${p.vat_rate}%)` : "";
+          prodBlok += `\n- ${p.name}: ${prijs}${unit}${btw}${p.type ? " · " + p.type : ""}${p.description ? " · " + p.description : ""}`;
+        }
+        prodBlok += "\n\nALS de gebruiker vraagt om een offerte: kijk eerst of een gevraagd item in deze catalogus staat. Zo ja, gebruik die naam, prijs en BTW. Vraag NIET aan de gebruiker wat een DJ-set kost als die in de catalogus staat. Voeg alleen items toe die er niet in staan na expliciet overleg.";
+        blok += prodBlok;
+      }
       // Financiële cijfers: bankstand, BTW per kwartaal/jaar. Komen automatisch mee
       // bij elke login zodat NOVA proactief mee kan denken zonder dat de gebruiker
       // het Financieel-paneel hoeft te openen.

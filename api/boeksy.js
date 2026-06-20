@@ -194,13 +194,30 @@ async function handleOverview(req, res) {
   const prevTo = new Date(prevYear, prevFromMonthAdj + 3, 0).toISOString().slice(0, 10);
 
   // Parallel ophalen voor snelheid; één faalt mag de rest niet stoppen
-  const [relations, invoices, quotes, pl, plPrev] = await Promise.allSettled([
+  const [relations, invoices, quotes, pl, plPrev, products] = await Promise.allSettled([
     boeksyFetch("/v1/relations?limit=50"),
     boeksyFetch("/v1/invoices?limit=20"),
     boeksyFetch("/v1/quotes?limit=20"),
     boeksyFetch(`/v1/reports/profit-loss?from=${from}&to=${to}`),
     boeksyFetch(`/v1/reports/profit-loss?from=${prevFrom}&to=${prevTo}`),
+    boeksyFetch("/v1/products"),
   ]);
+
+  // Producten: standaard-prijslijst voor offertes
+  if (products.status === "fulfilled") {
+    const list = products.value.data || products.value || [];
+    result.boeksyProducts = list.map((p) => ({
+      id: p.id,
+      name: p.name,
+      type: p.type || null,                  // 'dienst', 'product' etc
+      unit: p.unit || null,                  // 'uur', 'stuks' etc
+      sales_price: p.sales_price ?? p.price ?? null,
+      vat_rate: p.vat_rate ?? p.vat ?? 21,
+      description: p.description || null,
+    }));
+  } else {
+    result.boeksyProductsError = products.reason?.message || "fout";
+  }
 
   if (relations.status === "fulfilled") {
     result.relations = (relations.value.data || []).map((r) => ({ id: r.id, name: r.name, type: r.type, email: r.email }));
