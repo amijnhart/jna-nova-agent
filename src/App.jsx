@@ -1367,10 +1367,18 @@ function Nova({ token, onLogout }) {
     }, 700);
 
     try {
+      // Helper: bouw extra context die alle drie de fases meekrijgen
+      const extraBody = {
+        snippets: snippetsRef.current || [],
+        // Voor toekomstige uitbreiding: als de post gekoppeld is aan een event,
+        // sturen we de event-context mee. Voor nu null - kan later toegevoegd
+        // worden via de "post bij event"-flow.
+        eventContext: null,
+      };
       const res = await fetch(POST_WORKFLOW_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ phase: "concept", channel, topic, catalog: catalogRef.current }),
+        body: JSON.stringify({ phase: "concept", channel, topic, catalog: catalogRef.current, ...extraBody }),
       });
       const d = await res.json();
       clearInterval(prog);
@@ -1435,7 +1443,7 @@ function Nova({ token, onLogout }) {
       const res = await fetch(POST_WORKFLOW_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ phase: "production", channel: post.channel, topic: post.topic, concept: post.strategie, catalog: catalogRef.current }),
+        body: JSON.stringify({ phase: "production", channel: post.channel, topic: post.topic, concept: post.strategie, catalog: catalogRef.current, snippets: snippetsRef.current || [], eventContext: post.eventContext || null }),
       });
       const d = await res.json();
       clearInterval(prog);
@@ -1557,7 +1565,7 @@ function Nova({ token, onLogout }) {
       const res = await fetch(POST_WORKFLOW_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-        body: JSON.stringify({ phase: "revise", channel: post.channel, topic: post.topic, concept: post.strategie, role, feedback, currentOutput, catalog: catalogRef.current }),
+        body: JSON.stringify({ phase: "revise", channel: post.channel, topic: post.topic, concept: post.strategie, role, feedback, currentOutput, catalog: catalogRef.current, snippets: snippetsRef.current || [], eventContext: post.eventContext || null }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "herziening fout");
@@ -2220,6 +2228,7 @@ function Nova({ token, onLogout }) {
       invoices: (b.invoices || []).slice(0, 15).map((i) => ({ number: i.number, date: i.date, event_date: i.event_date, subject: i.subject, total: i.total, status: i.status, klant: i.relation })),
       quotes: (b.quotes || []).slice(0, 15).map((q) => ({ number: q.number, date: q.date, event_date: q.event_date, subject: q.subject, total: q.total, status: q.status, klant: q.relation })),
       profitLoss: b.profitLoss || null,
+      financials: b.financials || null, // bankstand + BTW per kwartaal/jaar
       events: (b.events || []).slice(0, 10).map((e) => ({ date: e.date, days: e.days, subject: e.subject, klant: e.klant, source: e.boeksySource })),
       followUps: (b.followUps || []).slice(0, 10).map((f) => ({ number: f.number, klant: f.klant, subject: f.subject, daysOpen: f.daysOpen, total: f.total })),
     } : null;
