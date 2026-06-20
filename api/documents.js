@@ -60,18 +60,51 @@ async function handleSnippets(req, res) {
 
 // --- FILES (PDF's, visuals via Vercel Blob) ---
 
+// Zoek de Blob-token. Vercel kan deze onder verschillende namen opslaan:
+// - BLOB_READ_WRITE_TOKEN (standaard)
+// - jna_BLOB_READ_WRITE_TOKEN of andere prefix als gebruiker dat heeft aangepast
+// - OIDC-modus: dan is er VERCEL_OIDC_TOKEN + BLOB_STORE_ID
+function findBlobToken() {
+  // Eerst de standaard
+  if (process.env.BLOB_READ_WRITE_TOKEN) return { token: process.env.BLOB_READ_WRITE_TOKEN, name: "BLOB_READ_WRITE_TOKEN" };
+  // Dan scannen op alles wat eindigt op _BLOB_READ_WRITE_TOKEN (custom prefix)
+  for (const key of Object.keys(process.env)) {
+    if (key.endsWith("BLOB_READ_WRITE_TOKEN") || key.endsWith("_BLOB_READ_WRITE_TOKEN")) {
+      return { token: process.env[key], name: key };
+    }
+  }
+  return { token: null, name: null };
+}
+
 function hasBlobToken() {
-  return !!process.env.BLOB_READ_WRITE_TOKEN;
+  return !!findBlobToken().token;
+}
+
+// Diagnose-info voor de gebruiker - welke Vercel-vars zijn aanwezig
+function blobDiagnose() {
+  const result = findBlobToken();
+  const allBlobVars = Object.keys(process.env)
+    .filter((k) => /blob/i.test(k))
+    .map((k) => k);
+  return {
+    configured: !!result.token,
+    foundUnder: result.name,
+    allBlobEnvVars: allBlobVars,
+    hasOidcToken: !!process.env.VERCEL_OIDC_TOKEN,
+    hasBlobStoreId: !!process.env.BLOB_STORE_ID,
+  };
 }
 
 async function blobPut(filename, body, contentType) {
+  const { token } = findBlobToken();
+  if (!token) throw new Error("Geen Blob-token gevonden in environment variables");
   // Vercel Blob API direct via fetch om geen extra package te hoeven installeren
   // (de @vercel/blob package kan ook, maar adds een dependency).
   const url = `https://blob.vercel-storage.com/${encodeURIComponent(filename)}`;
   const r = await fetch(url, {
     method: "PUT",
     headers: {
-      "Authorization": `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+      "Authorization": `Bearer ${token}`,
       "x-content-type": contentType || "application/octet-stream",
       "x-add-random-suffix": "1",
     },
@@ -86,10 +119,12 @@ async function blobPut(filename, body, contentType) {
 }
 
 async function blobDelete(url) {
+  const { token } = findBlobToken();
+  if (!token) throw new Error("Geen Blob-token gevonden");
   const r = await fetch("https://blob.vercel-storage.com/delete", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+      "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ urls: [url] }),
@@ -104,7 +139,8 @@ async function blobDelete(url) {
 async function handleFiles(req, res) {
   if (req.method === "GET") {
     const items = await readData(FILES_INDEX_KEY, []);
-    return res.status(200).json({ items, blobConfigured: hasBlobToken() });
+    const diag = blobDiagnose();
+    return res.status(200).json({ items, blobConfigured: diag.configured, blobDiagnose: diag });
   }
 
   if (req.method === "POST") {
@@ -178,9 +214,18 @@ export default async function handler(req, res) {
     if (type === "snippets") return await handleSnippets(req, res);
     if (type === "files") return await handleFiles(req, res);
     if (type === "blob-status") {
+      const diag = blobDiagnose();
       return res.status(200).json({
-        configured: hasBlobToken(),
-        hint: hasBlobToken() ? null : "Ga naar Vercel project → Storage → Create → Blob. Vercel voegt automatisch BLOB_READ_WRITE_TOKEN toe.",
+        configured: diag.configured,
+        foundUnder: diag.foundUnder,
+        allBlobEnvVars: diag.allBlobEnvVars,
+        hasOidcToken: diag.hasOidcToken,
+        hasBlobStoreId: diag.hasBlobStoreId,
+        hint: diag.configured
+          ? null
+          : (diag.allBlobEnvVars.length > 0
+              ? `Er staan Blob-vars in Vercel (${diag.allBlobEnvVars.join(", ")}) maar geen daarvan eindigt op BLOB_READ_WRITE_TOKEN. Mogelijk heeft Vercel een andere naam gebruikt. Controleer in Vercel Settings → Environment Variables welke naam je Blob-token heeft, en stuur die door zodat we de code kunnen aanpassen.`
+              : "Geen Vercel Blob env-vars gevonden. Stappen: Vercel project → Storage → Create → Blob → bij koppelen 'Production' aanvinken → daarna Deployments → Redeploy."),
       });
     }
     return res.status(400).json({ error: "Onbekend type. Gebruik snippets, files of blob-status." });
