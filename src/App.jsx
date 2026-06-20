@@ -860,10 +860,35 @@ function Nova({ token, onLogout }) {
       const groet = hour < 12 ? "Goedemorgen" : hour < 18 ? "Goedemiddag" : "Goedenavond";
       const naam = (typeof NOVA_NAME === "string" && NOVA_NAME) || "";
 
-      // Tel wat er nieuw is sinds vorige sessie
-      const urgent = (inbox.connected && inbox.emails) ? inbox.emails.filter((e) => e.urgent).length : 0;
-      const mailCount = (inbox.connected && inbox.emails) ? inbox.emails.length : 0;
+      // SEEN-tracking voor mails over sessies heen.
+      // Bug: NOVA benoemde elke login dezelfde mails opnieuw omdat we niet bijhielden
+      // wat al gezien was. Nu lezen we de set uit localStorage, vergelijken met huidige
+      // inbox, en tellen alleen écht NIEUW én ongelezen.
+      let mailSeen = new Set();
+      try {
+        const stored = localStorage.getItem("nova_mail_seen");
+        if (stored) mailSeen = new Set(JSON.parse(stored));
+      } catch (e) { void e; }
+      const allEmails = (inbox.connected && Array.isArray(inbox.emails)) ? inbox.emails : [];
+      const mailIdsNu = allEmails.map((m) => m.id || (m.from + m.subject));
+      // Alleen écht nieuwe + ongelezen mails tellen
+      const nieuweMails = allEmails.filter((m) => {
+        const id = m.id || (m.from + m.subject);
+        return !mailSeen.has(id) && m.unread;
+      });
+      const urgent = nieuweMails.filter((e) => e.urgent).length;
+      const mailCount = nieuweMails.length;
+      // De seen-set bijwerken zodat volgende sessie deze niet meer als nieuw benoemt
+      for (const id of mailIdsNu) mailSeen.add(id);
+      try {
+        // Houd de set bewust niet onbeperkt groot - laatste 500 IDs is genoeg
+        const arr = Array.from(mailSeen).slice(-500);
+        localStorage.setItem("nova_mail_seen", JSON.stringify(arr));
+      } catch (e) { void e; }
+
       const impCount = imps.length;
+
+      // WhatsApp gebruikt eigen read-flag van backend, prima
       const waNieuw = waInbox.filter((m) => !m.read).length;
 
       // Formuleer het mail-stuk afhankelijk van aantal en urgentie
@@ -1395,7 +1420,10 @@ function Nova({ token, onLogout }) {
       const melding = `Het plan voor de ${channel} over ${topic} staat klaar. Wil je dat ik het voorlees, of kom je er later op terug?`;
       setMessages((m) => [...m, { role: "assistant", content: melding }]);
       speak(melding);
-      setTimeout(() => placeActions(["Lees voor", "Toon op scherm", "Later"]), 600);
+      // Auto-open het concept-paneel zodat gebruiker direct ziet wat NOVA heeft.
+      // Voorheen moest hij "Toon op scherm" kiezen — onnodige stap.
+      setOpenPost(id);
+      setTimeout(() => placeActions(["Lees voor", "Goedkeuren", "Later"]), 600);
     } catch (err) {
       clearInterval(prog);
       setPosts((prev) => prev.map((p) => p.id === id ? { ...p, phase: "error", error: err.message } : p));
@@ -1462,7 +1490,10 @@ function Nova({ token, onLogout }) {
       const melding = `De content voor de ${post.channel} over ${post.topic} is klaar. Wil je dat ik het voorlees, of kom je er later op terug?`;
       setMessages((m) => [...m, { role: "assistant", content: melding }]);
       speak(melding);
-      setTimeout(() => placeActions(["Lees voor", "Toon op scherm", "Later"]), 600);
+      // Auto-open Marketing-detail zodra productie klaar. Vanaf daar ziet de gebruiker
+      // de overzichtspagina en kan doorklikken naar Content, Visual of Video.
+      setOpenAgentDetail({ postId, role: "marketing" });
+      setTimeout(() => placeActions(["Lees voor", "Plaats", "Later"]), 600);
     } catch (err) {
       clearInterval(prog);
       setPosts((prev) => prev.map((p) => p.id === postId ? { ...p, phase: "error", error: err.message } : p));
@@ -2229,6 +2260,7 @@ function Nova({ token, onLogout }) {
       quotes: (b.quotes || []).slice(0, 15).map((q) => ({ number: q.number, date: q.date, event_date: q.event_date, subject: q.subject, total: q.total, status: q.status, klant: q.relation })),
       profitLoss: b.profitLoss || null,
       financials: b.financials || null, // bankstand + BTW per kwartaal/jaar
+      boeksyProducts: b.boeksyProducts || null, // standaard productencatalogus voor offerteopzet
       events: (b.events || []).slice(0, 10).map((e) => ({ date: e.date, days: e.days, subject: e.subject, klant: e.klant, source: e.boeksySource })),
       followUps: (b.followUps || []).slice(0, 10).map((f) => ({ number: f.number, klant: f.klant, subject: f.subject, daysOpen: f.daysOpen, total: f.total })),
     } : null;
