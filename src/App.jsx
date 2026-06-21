@@ -3857,6 +3857,20 @@ function Nova({ token, onLogout }) {
                 <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Live alleen-lezen koppeling · klanten, facturen, offertes, W&amp;V</div>
               </div>
               <button onClick={openFinancials} title="Bankstand, BTW, IB-schatting" style={{ background: "rgba(56,230,255,.1)", border: `1px solid ${CYAN}55`, color: CYAN, borderRadius: 8, padding: "6px 12px", fontSize: 11, cursor: "pointer", fontWeight: 600, marginRight: 6 }}>📊 Financieel</button>
+              <button onClick={async () => {
+                setStatus("Boeksy-endpoints testen...");
+                try {
+                  const r = await fetch("/api/boeksy?action=diagnose", { headers: { Authorization: "Bearer " + token } });
+                  const d = await r.json();
+                  const werkend = d.results.filter((x) => x.ok).map((x) => `✓ ${x.endpoint} (${x.path})\n   → ${x.detail}`).join("\n");
+                  const niet = d.results.filter((x) => !x.ok).map((x) => `✗ ${x.endpoint} (${x.path}) → ${x.status} ${x.detail}`).join("\n");
+                  const tekst = `BOEKSY API DIAGNOSE\n${d.samenvatting.werkend} van ${d.samenvatting.totaal} endpoints werken.\n\nWERKEND:\n${werkend}\n\nNIET WERKEND:\n${niet}`;
+                  setMessages((m) => [...m, { role: "assistant", content: tekst }]);
+                  setStatus("Klaar");
+                } catch (e) {
+                  setMessages((m) => [...m, { role: "assistant", content: "Diagnose mislukt: " + e.message }]);
+                }
+              }} title="Test welke Boeksy endpoints werken" style={{ background: "rgba(239,159,39,.1)", border: `1px solid ${AMBER}55`, color: AMBER, borderRadius: 8, padding: "6px 12px", fontSize: 11, cursor: "pointer", fontWeight: 600, marginRight: 6 }}>🔍 Diagnose</button>
               <button onClick={() => setShowBoeksy(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px", minWidth: 32, minHeight: 32 }}>×</button>
             </div>
             <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
