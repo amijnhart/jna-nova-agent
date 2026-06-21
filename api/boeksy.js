@@ -53,6 +53,11 @@ async function handleDiagnose(req, res) {
     { name: "Relaties", path: "/v1/relations?limit=1" },
     { name: "Facturen", path: "/v1/invoices?limit=1" },
     { name: "Offertes", path: "/v1/quotes?limit=1" },
+    // Dashboard endpoints - waar onze financials nu uit komen
+    { name: "Dashboard: besteedbaar", path: "/v1/dashboard/disposable-income" },
+    { name: "Dashboard: banksaldo", path: "/v1/dashboard/bank-balance" },
+    { name: "Dashboard: deadlines", path: "/v1/dashboard/deadlines" },
+    { name: "Dashboard: open facturen", path: "/v1/dashboard/open-invoices" },
     { name: "P&L rapport", path: "/v1/reports/profit-loss?from=2026-01-01&to=2026-01-31" },
     { name: "Cashflow", path: "/v1/reports/cashflow-forecast?months=1" },
     // Rekeningschema - varianten proberen
@@ -65,13 +70,28 @@ async function handleDiagnose(req, res) {
     { name: "Boekingen (alternatief 1)", path: "/v1/journal-entries?from=2026-01-01&to=2026-01-31" },
     { name: "Boekingen (alternatief 2)", path: "/v1/entries?from=2026-01-01&to=2026-01-31" },
     // BTW endpoints - speculatief
-    { name: "BTW-aangifte", path: "/v1/reports/vat" },
+    { name: "BTW-aangifte (Q1)", path: "/v1/reports/vat?from=2026-01-01&to=2026-03-31" },
+    { name: "BTW-aangifte (oud zonder params)", path: "/v1/reports/vat" },
     { name: "BTW-positie", path: "/v1/vat" },
     { name: "Balans", path: "/v1/reports/balance" },
     { name: "Balans (alternatief)", path: "/v1/balance-sheet" },
     // Bank
-    { name: "Banktransacties", path: "/v1/bank/transactions" },
-    { name: "Bankrekeningen", path: "/v1/bank/accounts" },
+    // Bank
+    { name: "Banktransacties (nieuw)", path: "/v1/bank-transactions?from=2026-01-01&to=2026-06-30" },
+    { name: "Bankrekeningen (nieuw)", path: "/v1/bank-accounts" },
+    // Oude paden voor de zekerheid
+    { name: "Banktransacties (alt)", path: "/v1/bank/transactions" },
+    { name: "Bankrekeningen (alt)", path: "/v1/bank/accounts" },
+    // Inkoop & projecten
+    { name: "Inkoopfacturen", path: "/v1/purchases" },
+    { name: "Bonnetjes", path: "/v1/receipts" },
+    { name: "Projecten/events", path: "/v1/events" },
+    { name: "Urenregistratie", path: "/v1/time-entries" },
+    // Boekhouding
+    { name: "Vaste activa", path: "/v1/fixed-assets" },
+    { name: "Terugkerende boekingen", path: "/v1/recurring-entries" },
+    // Rapportage
+    { name: "Jaar-op-jaar", path: "/v1/reports/yoy?year=2026" },
   ];
 
   const results = [];
@@ -81,13 +101,32 @@ async function handleDiagnose(req, res) {
         headers: { Authorization: "Bearer " + key },
       });
       let bodyHint = "";
+      let sample = null;
       try {
         if (r.ok) {
           const j = await r.json();
-          // Veilig: alleen structuur tonen, geen inhoud
-          if (Array.isArray(j.data)) bodyHint = `array van ${j.data.length} items`;
-          else if (Array.isArray(j)) bodyHint = `array van ${j.length} items`;
-          else if (typeof j === "object") bodyHint = `object met velden: ${Object.keys(j).slice(0, 5).join(", ")}`;
+          // Voor dashboard-endpoints: laat de volledige veld-namen + waardes zien
+          // omdat we die nodig hebben om de juiste keys te kiezen.
+          const isDashboard = p.path.includes("/dashboard/") || p.path.includes("/reports/");
+          if (Array.isArray(j.data)) {
+            bodyHint = `array van ${j.data.length} items`;
+            if (isDashboard && j.data.length > 0) {
+              sample = JSON.stringify(j.data[0]).slice(0, 400);
+            }
+          } else if (Array.isArray(j)) {
+            bodyHint = `array van ${j.length} items`;
+            if (isDashboard && j.length > 0) {
+              sample = JSON.stringify(j[0]).slice(0, 400);
+            }
+          } else if (typeof j === "object") {
+            const keys = Object.keys(j);
+            bodyHint = `object met velden: ${keys.slice(0, 8).join(", ")}`;
+            // Voor dashboard: stuur de hele response mee (kleine objecten)
+            if (isDashboard) {
+              const dataObj = j.data || j;
+              sample = JSON.stringify(dataObj).slice(0, 500);
+            }
+          }
         } else {
           const j = await r.json().catch(() => ({}));
           bodyHint = (j.error?.message || j.message || "").slice(0, 100);
@@ -99,6 +138,7 @@ async function handleDiagnose(req, res) {
         status: r.status,
         ok: r.ok,
         detail: bodyHint,
+        sample,
       });
     } catch (err) {
       results.push({
