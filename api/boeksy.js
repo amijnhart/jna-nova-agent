@@ -408,25 +408,36 @@ async function handleOverview(req, res) {
     result.followUps = followUps;
   }
 
-  // FINANCIALS LIGHT: bankstand, BTW lopend kwartaal en jaar.
-  // Dit zit standaard in overview zodat NOVA er actief over kan meedenken zonder
-  // dat de gebruiker eerst het Financieel-paneel hoeft te openen.
-  // De volledige IB-berekening blijft alleen in /financials om kosten te sparen.
+  // FINANCIALS LIGHT uit Boeksy dashboard endpoints.
+  // PRINCIPE: niets zelf berekenen, alleen wat Boeksy zelf toont aan de gebruiker.
+  // Zo zijn de cijfers in NOVA's begroeting identiek aan wat Boeksy's app laat zien.
   try {
-    const ytdFrom = new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10);
-    const ytdTo = now.toISOString().slice(0, 10);
-    const [bank, vatQuarter, vatYear] = await Promise.allSettled([
-      calcBankBalance(),
-      calcVatPosition(from, to),
-      calcVatPosition(ytdFrom, ytdTo),
+    const [disposable, bankBalance] = await Promise.allSettled([
+      boeksyFetch("/v1/dashboard/disposable-income"),
+      boeksyFetch("/v1/dashboard/bank-balance"),
     ]);
+
+    let besteedbaar = null, bankSaldo = null, btwReservering = null, ibReservering = null;
+    if (disposable.status === "fulfilled") {
+      const d = disposable.value.data || disposable.value;
+      besteedbaar = pickNumber(d, "disposable_income", "besteedbaar", "spendable", "echt_besteedbaar", "available");
+      bankSaldo = pickNumber(d, "bank_balance", "banksaldo", "balance", "total_balance");
+      btwReservering = pickNumber(d, "vat_reservation", "btw_reservering", "vat_reserved", "btw");
+      ibReservering = pickNumber(d, "income_tax_reservation", "ib_reservering", "income_tax_reserved", "ib");
+    }
+    if (bankBalance.status === "fulfilled" && bankSaldo === null) {
+      const b = bankBalance.value.data || bankBalance.value;
+      bankSaldo = pickNumber(b, "total", "total_balance", "saldo", "balance");
+    }
+
     result.financials = {
-      bank: bank.status === "fulfilled" ? { saldo: bank.value.saldo, reason: bank.value.reason, accounts: bank.value.accounts } : null,
-      btwKwartaal: vatQuarter.status === "fulfilled" ? { uitgaand: vatQuarter.value.uitgaand, inkomend: vatQuarter.value.inkomend, teBetalen: vatQuarter.value.teBetalen, from, to } : null,
-      btwJaar: vatYear.status === "fulfilled" ? { uitgaand: vatYear.value.uitgaand, inkomend: vatYear.value.inkomend, teBetalen: vatYear.value.teBetalen, from: ytdFrom, to: ytdTo } : null,
+      besteedbaar,
+      bankSaldo,
+      btwReservering,
+      ibReservering,
+      bron: "Boeksy dashboard",
     };
   } catch (err) {
-    // Niet fataal - rest van overview moet doorgaan
     result.financialsError = err.message;
   }
 
@@ -461,287 +472,151 @@ async function handleCreateQuote(req, res) {
 }
 
 // POST /v1/invoices - factuur als concept aanmaken.
-// --- FINANCIËLE RAPPORTAGES (afgeleid uit journal-entries en ledger-accounts) ---
+// --- FINANCIËLE RAPPORTAGES (rechtstreeks uit Boeksy dashboard endpoints) ---
+//
+// PRINCIPE: NIETS ZELF BEREKENEN. Boeksy levert de cijfers al klaar voor gebruik.
+// Wij halen ze op en presenteren ze. Geen schattingen, geen belastingschijven,
+// geen optellingen uit journal-entries - alles komt direct van Boeksy.
+//
+// Endpoints die we gebruiken:
+//   /v1/dashboard/disposable-income   - besteedbaar bedrag, BTW + IB reservering
+//   /v1/dashboard/bank-balance        - totaal banksaldo + per rekening
+//   /v1/dashboard/deadlines           - BTW-deadline, achterstallig
+//   /v1/dashboard/open-invoices       - openstaande verkoopfacturen
+//   /v1/reports/vat?from=...&to=...   - BTW-aangifte per periode
 
-// Detecteert bank-grootboekrekeningen op basis van veelvoorkomende patronen.
-// Boeksy gebruikt het Nederlandse rekeningschema; bank-accounts vallen meestal
-// in de 1000-1099 reeks (liquide middelen) of hebben "bank" in de naam.
-function isBankAccount(account) {
-  if (!account) return false;
-  const code = String(account.code || account.number || "").trim();
-  const name = String(account.name || "").toLowerCase();
-  // 1000-1099 is standaard liquide middelen in Nederlands rekeningschema
-  if (/^10\d{2}$/.test(code)) return true;
-  if (/^11\d{2}$/.test(code)) return true; // soms ook 11xx voor banken
-  if (/bank|knab|ing|abn|rabo|liquide|kas/.test(name)) return true;
-  return false;
-}
-
-// Detecteert BTW-grootboekrekeningen. Standaard NL-schema: 1500-1599 reeks.
-// Voorbeelden: 1500 Te betalen BTW hoog, 1510 BTW laag, 1520 Voorbelasting.
-function classifyVatAccount(account) {
-  if (!account) return null;
-  const code = String(account.code || account.number || "").trim();
-  const name = String(account.name || "").toLowerCase();
-  // Outbound BTW = wat we moeten betalen aan belastingdienst (op verkopen)
-  if (/^15(0|1)\d$/.test(code)) return "uitgaand"; // te betalen BTW (verkoop)
-  if (/^15(2|3)\d$/.test(code)) return "inkomend"; // voorbelasting (inkoop)
-  if (/te.betalen.btw|btw.afdracht|btw.verkoop|omzetbelasting.verkoop/.test(name)) return "uitgaand";
-  if (/voorbelasting|btw.inkoop|terug.te.vorderen.btw/.test(name)) return "inkomend";
+// Helper: probeer veld onder verschillende namen
+function pickNumber(obj, ...names) {
+  if (!obj) return null;
+  for (const n of names) {
+    if (typeof obj[n] === "number") return obj[n];
+    if (typeof obj[n] === "string" && !isNaN(parseFloat(obj[n]))) return parseFloat(obj[n]);
+  }
   return null;
 }
 
-// Bereken bankstand uit ledger-accounts en boekingen tot vandaag.
-// Returnt totaal saldo op alle bank-accounts.
-async function calcBankBalance() {
-  try {
-    const accountsData = await boeksyFetch("/v1/accounting/ledger-accounts");
-    const accounts = accountsData.data || accountsData || [];
-    const bankAccounts = accounts.filter(isBankAccount);
-    if (!bankAccounts.length) return { saldo: null, accounts: [], reason: "Geen bank-grootboekrekeningen herkend in je rekeningschema" };
-
-    // Voor elke bank-account: huidig saldo afleiden uit alle mutaties vanaf
-    // boekjaar-begin. Boeksy geeft mogelijk een 'balance' veld direct mee.
-    const result = [];
-    for (const acc of bankAccounts) {
-      let saldo = null;
-      // Probeer direct balance veld
-      if (typeof acc.balance === "number") saldo = acc.balance;
-      else if (typeof acc.current_balance === "number") saldo = acc.current_balance;
-      else if (typeof acc.amount === "number") saldo = acc.amount;
-      result.push({
-        code: acc.code || acc.number,
-        name: acc.name,
-        saldo,
-      });
-    }
-
-    // Als geen enkele account een balance gaf, sommen we via journal-entries
-    const haveBalance = result.some((r) => r.saldo !== null);
-    if (!haveBalance) {
-      const today = new Date().toISOString().slice(0, 10);
-      const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10);
-      try {
-        const entriesData = await boeksyFetch(`/v1/accounting/journal-entries?from=${yearStart}&to=${today}`);
-        const entries = entriesData.data || entriesData || [];
-        const codesSet = new Set(bankAccounts.map((a) => String(a.code || a.number)));
-        const saldos = {};
-        for (const code of codesSet) saldos[code] = 0;
-        for (const entry of entries) {
-          const lines = entry.lines || entry.rows || [];
-          for (const line of lines) {
-            const lineCode = String(line.account_code || line.ledger_code || line.code || "");
-            if (!codesSet.has(lineCode)) continue;
-            const debit = parseFloat(line.debit || 0) || 0;
-            const credit = parseFloat(line.credit || 0) || 0;
-            // Voor bank: debet verhoogt saldo (geld erbij), credit verlaagt (geld eraf)
-            saldos[lineCode] = (saldos[lineCode] || 0) + debit - credit;
-          }
-        }
-        for (const r of result) {
-          const k = String(r.code);
-          if (saldos[k] !== undefined) r.saldo = saldos[k];
-        }
-      } catch (e) {
-        // journal-entries faalde; laat saldo's null staan
-      }
-    }
-
-    const totaal = result.reduce((sum, r) => sum + (r.saldo || 0), 0);
-    const allOk = result.every((r) => r.saldo !== null);
-    return {
-      saldo: allOk ? totaal : null,
-      accounts: result,
-      reason: allOk ? null : "Niet alle bank-saldi konden bepaald worden uit Boeksy. Mogelijk is je administratie niet volledig bij of mist Boeksy een balance-endpoint.",
-    };
-  } catch (err) {
-    return { saldo: null, accounts: [], reason: "Fout bij ophalen bankgegevens: " + err.message };
-  }
-}
-
-// Bereken BTW positie voor een periode.
-// Uitgaand (verkoop) - Inkomend (voorbelasting) = te betalen aan Belastingdienst.
-async function calcVatPosition(from, to) {
-  try {
-    const accountsData = await boeksyFetch("/v1/accounting/ledger-accounts");
-    const accounts = accountsData.data || accountsData || [];
-    const vatAccounts = {};
-    for (const acc of accounts) {
-      const type = classifyVatAccount(acc);
-      if (type) vatAccounts[String(acc.code || acc.number)] = { type, name: acc.name };
-    }
-    if (!Object.keys(vatAccounts).length) {
-      return { uitgaand: 0, inkomend: 0, teBetalen: 0, reason: "Geen BTW-grootboekrekeningen herkend in je rekeningschema" };
-    }
-
-    const entriesData = await boeksyFetch(`/v1/accounting/journal-entries?from=${from}&to=${to}`);
-    const entries = entriesData.data || entriesData || [];
-
-    let uitgaand = 0; // BTW op verkopen (creditzijde op te-betalen BTW)
-    let inkomend = 0; // BTW op inkopen (debetzijde voorbelasting)
-
-    for (const entry of entries) {
-      const lines = entry.lines || entry.rows || [];
-      for (const line of lines) {
-        const lineCode = String(line.account_code || line.ledger_code || line.code || "");
-        const vatAcc = vatAccounts[lineCode];
-        if (!vatAcc) continue;
-        const debit = parseFloat(line.debit || 0) || 0;
-        const credit = parseFloat(line.credit || 0) || 0;
-        if (vatAcc.type === "uitgaand") {
-          // Te-betalen BTW: credit = erbij (verkoop met BTW), debit = eraf (aangifte gedaan)
-          uitgaand += credit - debit;
-        } else {
-          // Voorbelasting: debit = erbij (inkoop met BTW aftrekbaar), credit = eraf
-          inkomend += debit - credit;
-        }
-      }
-    }
-
-    return {
-      uitgaand: Math.round(uitgaand * 100) / 100,
-      inkomend: Math.round(inkomend * 100) / 100,
-      teBetalen: Math.round((uitgaand - inkomend) * 100) / 100,
-      from, to,
-      reason: null,
-    };
-  } catch (err) {
-    return { uitgaand: 0, inkomend: 0, teBetalen: 0, reason: "Fout bij BTW-berekening: " + err.message };
-  }
-}
-
-// Schat de inkomstenbelasting Box 1 voor een ZZP'er volgens NL-tarieven 2026.
-// LET OP: dit is een grove schatting voor reserveringsdoeleinden, NIET een
-// belastingaangifte. Werkelijke aangifte hangt af van veel factoren die wij
-// niet kennen (toeslagen, hypotheekrente, partner-inkomen, etc.).
-function estimateIncomeTax(annualProfit) {
-  if (!annualProfit || annualProfit <= 0) return { totalTax: 0, profitAfterDeductions: 0, breakdown: [] };
-
-  // Zelfstandigenaftrek 2026 (wordt afgebouwd)
-  const zelfstandigenaftrek = 1200;
-  // MKB-winstvrijstelling 2026: 12,03% over winst minus zelfstandigenaftrek
-  const winstNaZelfstandigen = Math.max(0, annualProfit - zelfstandigenaftrek);
-  const mkbVrijstelling = Math.round(winstNaZelfstandigen * 0.1203);
-  const belastbareWinst = Math.max(0, winstNaZelfstandigen - mkbVrijstelling);
-
-  // Box 1 schijven 2026 (ZZP zonder AOW)
-  // Schijf 1: tot ~€38.441 → 35,82% (incl. premies volksverzekeringen)
-  // Schijf 2: tot ~€76.817 → 37,48%
-  // Schijf 3: vanaf €76.817 → 49,50%
-  const brackets = [
-    { tot: 38441, rate: 0.3582 },
-    { tot: 76817, rate: 0.3748 },
-    { tot: Infinity, rate: 0.4950 },
-  ];
-
-  let tax = 0;
-  let remaining = belastbareWinst;
-  let lastTop = 0;
-  const breakdown = [];
-  for (const b of brackets) {
-    if (remaining <= 0) break;
-    const segmentSize = Math.min(remaining, b.tot - lastTop);
-    const segmentTax = segmentSize * b.rate;
-    tax += segmentTax;
-    breakdown.push({ tot: b.tot === Infinity ? null : b.tot, rate: b.rate, segment: Math.round(segmentSize), tax: Math.round(segmentTax) });
-    remaining -= segmentSize;
-    lastTop = b.tot;
-  }
-
-  // Heffingskorting algemeen + arbeidskorting (vereenvoudigd, 2026)
-  // Voor middeninkomens samen ongeveer €5500 aftrek
-  const heffingskortingen = Math.min(5500, tax);
-  const finalTax = Math.max(0, tax - heffingskortingen);
-
-  return {
-    annualProfit: Math.round(annualProfit),
-    zelfstandigenaftrek,
-    mkbVrijstelling,
-    belastbareWinst: Math.round(belastbareWinst),
-    taxBeforeKortingen: Math.round(tax),
-    heffingskortingen,
-    totalTax: Math.round(finalTax),
-    breakdown,
-  };
-}
-
-// Hoofdhandler voor het financiële overzicht
 async function handleFinancials(req, res) {
   const now = new Date();
   const year = now.getFullYear();
   const yearStart = new Date(year, 0, 1).toISOString().slice(0, 10);
   const today = now.toISOString().slice(0, 10);
 
-  // Lopend kwartaal
+  // Lopend kwartaal voor BTW-aangifte
   const q = Math.floor(now.getMonth() / 3);
   const qFrom = new Date(year, q * 3, 1).toISOString().slice(0, 10);
   const qTo = today;
 
-  // BTW: verzamel kwartaal, jaar, lopende maand
-  const monthFrom = new Date(year, now.getMonth(), 1).toISOString().slice(0, 10);
+  // Lopende maand voor BTW
+  const mFrom = new Date(year, now.getMonth(), 1).toISOString().slice(0, 10);
 
-  const [bank, vatQuarter, vatYear, vatMonth, plYearData] = await Promise.allSettled([
-    calcBankBalance(),
-    calcVatPosition(qFrom, qTo),
-    calcVatPosition(yearStart, today),
-    calcVatPosition(monthFrom, today),
-    boeksyFetch(`/v1/reports/profit-loss?from=${yearStart}&to=${today}`),
+  // Alles parallel ophalen voor snelheid
+  const [disposable, bankBalance, deadlines, openInvoices, vatQuarter, vatYear, vatMonth] = await Promise.allSettled([
+    boeksyFetch("/v1/dashboard/disposable-income"),
+    boeksyFetch("/v1/dashboard/bank-balance"),
+    boeksyFetch("/v1/dashboard/deadlines"),
+    boeksyFetch("/v1/dashboard/open-invoices"),
+    boeksyFetch(`/v1/reports/vat?from=${qFrom}&to=${qTo}`),
+    boeksyFetch(`/v1/reports/vat?from=${yearStart}&to=${today}`),
+    boeksyFetch(`/v1/reports/vat?from=${mFrom}&to=${today}`),
   ]);
 
-  // Winst dit jaar voor IB-schatting
-  let yearProfit = 0;
-  if (plYearData.status === "fulfilled") {
-    const pl = plYearData.value.data || plYearData.value;
-    if (typeof pl.profit === "number") yearProfit = pl.profit;
-    else if (typeof pl.winst === "number") yearProfit = pl.winst;
-    else if (typeof pl.net_profit === "number") yearProfit = pl.net_profit;
-    else if (typeof pl.result === "number") yearProfit = pl.result;
-    else {
-      const revenue = parseFloat(pl.revenue || pl.omzet || pl.total_revenue || 0) || 0;
-      const expenses = parseFloat(pl.expenses || pl.kosten || pl.total_expenses || 0) || 0;
-      yearProfit = revenue - expenses;
+  // disposable-income response: verwacht structuur uit dashboard
+  // Mogelijke veldnamen die we proberen (voor robuustheid)
+  let besteedbaar = null, bankSaldo = null, btwReservering = null, ibReservering = null;
+  if (disposable.status === "fulfilled") {
+    const d = disposable.value.data || disposable.value;
+    besteedbaar = pickNumber(d, "disposable_income", "besteedbaar", "spendable", "echt_besteedbaar", "available");
+    bankSaldo = pickNumber(d, "bank_balance", "banksaldo", "balance", "total_balance");
+    btwReservering = pickNumber(d, "vat_reservation", "btw_reservering", "vat_reserved", "btw");
+    ibReservering = pickNumber(d, "income_tax_reservation", "ib_reservering", "income_tax_reserved", "ib");
+  }
+
+  // bank-balance fallback voor specifiekere bank-data
+  let bankAccounts = [];
+  let bankTotal = bankSaldo;
+  if (bankBalance.status === "fulfilled") {
+    const b = bankBalance.value.data || bankBalance.value;
+    const total = pickNumber(b, "total", "total_balance", "saldo", "balance");
+    if (total !== null) bankTotal = total;
+    const accounts = b.accounts || b.bank_accounts || b.rekeningen || [];
+    if (Array.isArray(accounts)) {
+      bankAccounts = accounts.map((a) => ({
+        name: a.name || a.iban || a.naam || "rekening",
+        iban: a.iban || a.account_number || null,
+        saldo: pickNumber(a, "balance", "saldo", "amount", "current_balance"),
+      }));
     }
   }
 
-  // Projecteer naar jaarwinst voor IB-schatting
-  const dayOfYear = Math.floor((now - new Date(year, 0, 0)) / 86400000);
-  const daysInYear = ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
-  const projectedProfit = dayOfYear > 30 ? Math.round(yearProfit * (daysInYear / dayOfYear)) : yearProfit;
+  // BTW per periode - probeer veldnamen
+  function extractVat(result) {
+    if (result.status !== "fulfilled") return { reason: result.reason?.message || "ophalen mislukt" };
+    const d = result.value.data || result.value;
+    return {
+      teBetalen: pickNumber(d, "to_pay", "te_betalen", "balance", "vat_due", "total"),
+      geind: pickNumber(d, "collected", "geind", "vat_collected", "output_vat", "uitgaand"),
+      aftrekbaar: pickNumber(d, "deductible", "aftrekbaar", "vat_deductible", "input_vat", "inkomend"),
+      from: d.from || d.period_from,
+      to: d.to || d.period_to,
+    };
+  }
 
-  const ibActueel = estimateIncomeTax(yearProfit);     // op basis van YTD winst
-  const ibProjected = estimateIncomeTax(projectedProfit); // schatting volledige jaar
+  // Deadlines voor BTW-aangifte
+  let btwDeadline = null, btwDagen = null, achterstallig = null, ongematched = null;
+  if (deadlines.status === "fulfilled") {
+    const d = deadlines.value.data || deadlines.value;
+    btwDeadline = d.vat_deadline || d.btw_deadline || d.next_vat_deadline || null;
+    btwDagen = pickNumber(d, "days_until_vat", "btw_dagen", "vat_days_remaining");
+    achterstallig = pickNumber(d, "overdue_invoices", "achterstallig", "overdue_count");
+    ongematched = pickNumber(d, "unmatched_transactions", "ongematcht", "unmatched_count");
+  }
 
-  // BTW te reserveren = het uitgaande BTW totaal tot nu toe (we moeten dit aan Belastingdienst)
-  const btwTeReserveren = vatYear.status === "fulfilled" ? Math.max(0, vatYear.value.teBetalen) : 0;
-
-  // Besteedbaar = bank - BTW te betalen - geprojecteerde IB nog te betalen
-  const bankSaldo = bank.status === "fulfilled" ? bank.value.saldo : null;
-  const besteedbaar = bankSaldo !== null ? Math.round(bankSaldo - btwTeReserveren - ibProjected.totalTax) : null;
+  // Openstaande facturen
+  let openstaandTotal = null, openstaandLijst = [];
+  if (openInvoices.status === "fulfilled") {
+    const d = openInvoices.value.data || openInvoices.value;
+    if (Array.isArray(d)) {
+      openstaandLijst = d.slice(0, 20);
+      openstaandTotal = d.reduce((sum, inv) => sum + (pickNumber(inv, "open_amount", "openstaand", "balance", "total") || 0), 0);
+    } else if (d && Array.isArray(d.invoices)) {
+      openstaandLijst = d.invoices.slice(0, 20);
+      openstaandTotal = pickNumber(d, "total", "total_outstanding", "openstaand_totaal");
+    }
+  }
 
   return res.status(200).json({
-    bank: bank.status === "fulfilled" ? bank.value : { saldo: null, reason: bank.reason?.message },
-    btw: {
-      maand: vatMonth.status === "fulfilled" ? vatMonth.value : { reason: vatMonth.reason?.message },
-      kwartaal: vatQuarter.status === "fulfilled" ? vatQuarter.value : { reason: vatQuarter.reason?.message },
-      jaar: vatYear.status === "fulfilled" ? vatYear.value : { reason: vatYear.reason?.message },
-      teReserveren: btwTeReserveren,
-    },
-    ib: {
-      ytdWinst: yearProfit,
-      geprojecteerdeJaarwinst: projectedProfit,
-      ibYtd: ibActueel,
-      ibGeprojecteerd: ibProjected,
-    },
+    // Hoofdwaarden uit dashboard - PRECIES wat Boeksy zelf toont
     besteedbaar: {
-      bankSaldo,
-      minBtw: btwTeReserveren,
-      minIbGeprojecteerd: ibProjected.totalTax,
-      besteedbaar,
+      bedrag: besteedbaar,
+      bankSaldo: bankTotal,
+      minBtw: btwReservering,
+      minIb: ibReservering,
     },
-    waarschuwing: "Dit zijn schattingen op basis van boekhoudkundige gegevens, geen belastingaangifte. Voor de werkelijke aangifte raadpleeg je accountant.",
+    bank: {
+      saldo: bankTotal,
+      accounts: bankAccounts,
+    },
+    btw: {
+      maand: extractVat(vatMonth),
+      kwartaal: extractVat(vatQuarter),
+      jaar: extractVat(vatYear),
+      teReserveren: btwReservering,
+    },
+    deadlines: {
+      btwDeadline,
+      btwDagenRest: btwDagen,
+      achterstalligeFacturen: achterstallig,
+      ongematchteTransacties: ongematched,
+    },
+    openstaand: {
+      totaal: openstaandTotal,
+      facturen: openstaandLijst,
+    },
+    bron: "Boeksy dashboard endpoints",
     berekend: new Date().toISOString(),
   });
 }
+
 
 async function handleCreateInvoice(req, res) {
   const key = getApiKey();

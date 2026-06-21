@@ -121,24 +121,20 @@ export default async function handler(req, res) {
       // het Financieel-paneel hoeft te openen.
       if (boeksy.financials) {
         const f = boeksy.financials;
-        let finBlok = "\n\nFINANCIËLE POSITIE (afgeleid uit Boeksy boekhouding):";
-        if (f.bank) {
-          if (f.bank.saldo !== null && f.bank.saldo !== undefined) {
-            finBlok += `\n- Bankstand totaal: € ${f.bank.saldo.toLocaleString("nl-NL", { maximumFractionDigits: 0 })}`;
-            if (Array.isArray(f.bank.accounts) && f.bank.accounts.length > 1) {
-              finBlok += " (verdeeld over " + f.bank.accounts.length + " rekeningen)";
-            }
-          } else if (f.bank.reason) {
-            finBlok += `\n- Bankstand: niet bepaalbaar - ${f.bank.reason}`;
-          }
+        let finBlok = "\n\nFINANCIËLE POSITIE (rechtstreeks uit Boeksy dashboard):";
+        if (f.besteedbaar !== null && f.besteedbaar !== undefined) {
+          finBlok += `\n- Echt besteedbaar: € ${f.besteedbaar.toLocaleString("nl-NL", { maximumFractionDigits: 2 })}`;
         }
-        if (f.btwKwartaal) {
-          finBlok += `\n- BTW lopend kwartaal: te betalen € ${(f.btwKwartaal.teBetalen || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })} (verkoop-BTW € ${(f.btwKwartaal.uitgaand || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })} minus voorbelasting € ${(f.btwKwartaal.inkomend || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })})`;
+        if (f.bankSaldo !== null && f.bankSaldo !== undefined) {
+          finBlok += `\n- Bankstand totaal: € ${f.bankSaldo.toLocaleString("nl-NL", { maximumFractionDigits: 2 })}`;
         }
-        if (f.btwJaar) {
-          finBlok += `\n- BTW dit jaar (YTD): te betalen € ${(f.btwJaar.teBetalen || 0).toLocaleString("nl-NL", { maximumFractionDigits: 0 })}`;
+        if (f.btwReservering !== null && f.btwReservering !== undefined) {
+          finBlok += `\n- BTW gereserveerd: € ${f.btwReservering.toLocaleString("nl-NL", { maximumFractionDigits: 2 })}`;
         }
-        finBlok += "\n\nWanneer de gebruiker vraagt over geld, bankstand, BTW, belasting of besteedbaar budget: gebruik deze cijfers. Dit zijn schattingen op basis van boekhoudkundige data, geen aangifte. Voor de volledige IB-berekening en besteedbaar-budget kan de gebruiker het Financieel-paneel openen via het quick-menu of door 'open financieel' te zeggen.";
+        if (f.ibReservering !== null && f.ibReservering !== undefined) {
+          finBlok += `\n- IB gereserveerd: € ${f.ibReservering.toLocaleString("nl-NL", { maximumFractionDigits: 2 })}`;
+        }
+        finBlok += "\n\nBELANGRIJK: deze cijfers komen direct van Boeksy en zijn 1:1 wat Boeksy in zijn app toont. Niet zelf herberekenen of schatten. Voor meer detail (BTW per periode, openstaande facturen) kan de gebruiker het Financieel-paneel openen.";
         blok += finBlok;
       }
       if (Array.isArray(boeksy.events) && boeksy.events.length) {
