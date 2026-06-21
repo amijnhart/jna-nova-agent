@@ -39,7 +39,89 @@ async function boeksyFetch(path) {
   return await res.json();
 }
 
-// --- HANDLERS ---
+// Diagnose: probeer welke Boeksy endpoints werken voor jouw API-key.
+// Dit is een veilige manier om te ontdekken welke endpoints beschikbaar zijn
+// zonder dat de gebruiker zelf met API-keys hoeft te knoeien.
+async function handleDiagnose(req, res) {
+  const key = getApiKey();
+  if (!key) return res.status(503).json({ error: "Geen BOEKSY_API_KEY in Vercel" });
+
+  // Lijst van endpoints om te proberen - bekende uit docs en mogelijke varianten
+  const probes = [
+    // Uit de docs
+    { name: "Producten", path: "/v1/products" },
+    { name: "Relaties", path: "/v1/relations?limit=1" },
+    { name: "Facturen", path: "/v1/invoices?limit=1" },
+    { name: "Offertes", path: "/v1/quotes?limit=1" },
+    { name: "P&L rapport", path: "/v1/reports/profit-loss?from=2026-01-01&to=2026-01-31" },
+    { name: "Cashflow", path: "/v1/reports/cashflow-forecast?months=1" },
+    // Rekeningschema - varianten proberen
+    { name: "Rekeningschema (gedocumenteerd)", path: "/v1/accounting/ledger-accounts" },
+    { name: "Rekeningschema (alternatief 1)", path: "/v1/ledger-accounts" },
+    { name: "Rekeningschema (alternatief 2)", path: "/v1/accounts" },
+    { name: "Rekeningschema (alternatief 3)", path: "/v1/chart-of-accounts" },
+    // Journal entries - varianten
+    { name: "Boekingen (gedocumenteerd)", path: "/v1/accounting/journal-entries?from=2026-01-01&to=2026-01-31" },
+    { name: "Boekingen (alternatief 1)", path: "/v1/journal-entries?from=2026-01-01&to=2026-01-31" },
+    { name: "Boekingen (alternatief 2)", path: "/v1/entries?from=2026-01-01&to=2026-01-31" },
+    // BTW endpoints - speculatief
+    { name: "BTW-aangifte", path: "/v1/reports/vat" },
+    { name: "BTW-positie", path: "/v1/vat" },
+    { name: "Balans", path: "/v1/reports/balance" },
+    { name: "Balans (alternatief)", path: "/v1/balance-sheet" },
+    // Bank
+    { name: "Banktransacties", path: "/v1/bank/transactions" },
+    { name: "Bankrekeningen", path: "/v1/bank/accounts" },
+  ];
+
+  const results = [];
+  for (const p of probes) {
+    try {
+      const r = await fetch(BASE_URL + p.path, {
+        headers: { Authorization: "Bearer " + key },
+      });
+      let bodyHint = "";
+      try {
+        if (r.ok) {
+          const j = await r.json();
+          // Veilig: alleen structuur tonen, geen inhoud
+          if (Array.isArray(j.data)) bodyHint = `array van ${j.data.length} items`;
+          else if (Array.isArray(j)) bodyHint = `array van ${j.length} items`;
+          else if (typeof j === "object") bodyHint = `object met velden: ${Object.keys(j).slice(0, 5).join(", ")}`;
+        } else {
+          const j = await r.json().catch(() => ({}));
+          bodyHint = (j.error?.message || j.message || "").slice(0, 100);
+        }
+      } catch { /* */ }
+      results.push({
+        endpoint: p.name,
+        path: p.path,
+        status: r.status,
+        ok: r.ok,
+        detail: bodyHint,
+      });
+    } catch (err) {
+      results.push({
+        endpoint: p.name,
+        path: p.path,
+        status: 0,
+        ok: false,
+        detail: "Netwerkfout: " + err.message.slice(0, 100),
+      });
+    }
+  }
+
+  return res.status(200).json({
+    base: BASE_URL,
+    results,
+    samenvatting: {
+      werkend: results.filter((r) => r.ok).length,
+      totaal: results.length,
+    },
+  });
+}
+
+
 
 // Bereken contentadvies voor een specifieke event-datum.
 // Geeft een lijst suggesties met datum, type en korte tekst.
@@ -701,6 +783,7 @@ export default async function handler(req, res) {
       if (action === "quotes") return await handleQuotes(req, res);
       if (action === "profit-loss") return await handleProfitLoss(req, res);
       if (action === "overview") return await handleOverview(req, res);
+      if (action === "diagnose") return await handleDiagnose(req, res);
       if (action === "financials") return await handleFinancials(req, res);
       return res.status(400).json({ error: "Onbekende GET-action" });
     }
