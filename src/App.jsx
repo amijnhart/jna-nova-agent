@@ -2443,13 +2443,16 @@ function Nova({ token, onLogout }) {
       return;
     }
 
-    // Financieel-vraag detecteren: bankstand, BTW, IB, besteedbaar
-    const finMatch = lower.match(/\b(bankstand|wat\s+staat\s+er\s+op\s+de\s+bank|hoeveel\s+(staat|heb)\s+ik\s+(op\s+de\s+bank|nog|in\s+kas)|btw|omzetbelasting|inkomstenbelasting|\bib\b|besteedbaar|hoeveel\s+kan\s+ik\s+uitgeven|hoeveel\s+is\s+vrij|reservering)\b/);
-    if (finMatch) {
+    // Alleen Financieel-paneel openen bij EXPLICIETE vraag.
+    // Bij gewone vragen ("wat is mijn banksaldo") antwoordt NOVA gewoon in chat
+    // met de cijfers uit context. Paneel-explosie is overkill.
+    const explicitOpenFin = /\b(open|toon|laat\s+zien|toon\s+me)\s+(het\s+)?(financieel|financiele|finance)/.test(lower) ||
+                            /\b(financieel|financiele)\s+(paneel|overzicht)/.test(lower);
+    if (explicitOpenFin) {
       setMessages((m) => [...m, { role: "user", content: text }]);
       setInput("");
       openFinancials();
-      const intro = "Ik open je financieel overzicht. Bankstand, BTW per periode en geschatte IB worden voor je berekend uit Boeksy.";
+      const intro = "Ik open het financieel overzicht voor je.";
       setMessages((m) => [...m, { role: "assistant", content: intro }]);
       speak(intro);
       return;
@@ -3873,7 +3876,11 @@ function Nova({ token, onLogout }) {
                 try {
                   const r = await fetch("/api/boeksy?action=diagnose", { headers: { Authorization: "Bearer " + token } });
                   const d = await r.json();
-                  const werkend = d.results.filter((x) => x.ok).map((x) => `✓ ${x.endpoint} (${x.path})\n   → ${x.detail}`).join("\n");
+                  const werkend = d.results.filter((x) => x.ok).map((x) => {
+                    let line = `✓ ${x.endpoint} (${x.path})\n   → ${x.detail}`;
+                    if (x.sample) line += `\n   SAMPLE: ${x.sample}`;
+                    return line;
+                  }).join("\n");
                   const niet = d.results.filter((x) => !x.ok).map((x) => `✗ ${x.endpoint} (${x.path}) → ${x.status} ${x.detail}`).join("\n");
                   const tekst = `BOEKSY API DIAGNOSE\n${d.samenvatting.werkend} van ${d.samenvatting.totaal} endpoints werken.\n\nWERKEND:\n${werkend}\n\nNIET WERKEND:\n${niet}`;
                   setMessages((m) => [...m, { role: "assistant", content: tekst }]);
