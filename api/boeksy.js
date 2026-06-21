@@ -454,16 +454,16 @@ async function handleOverview(req, res) {
   try {
     const [disposable, bankBalance] = await Promise.allSettled([
       boeksyFetch("/v1/dashboard/disposable-income"),
-      boeksyFetch("/v1/dashboard/bank-balance"),
+      boeksyFetch("/v1/bank-accounts"),
     ]);
 
     let besteedbaar = null, bankSaldo = null, btwReservering = null, ibReservering = null;
     if (disposable.status === "fulfilled") {
       const d = disposable.value.data || disposable.value;
-      besteedbaar = pickNumber(d, "disposable_income", "besteedbaar", "spendable", "echt_besteedbaar", "available");
-      bankSaldo = pickNumber(d, "bank_balance", "banksaldo", "balance", "total_balance");
-      btwReservering = pickNumber(d, "vat_reservation", "btw_reservering", "vat_reserved", "btw");
-      ibReservering = pickNumber(d, "income_tax_reservation", "ib_reservering", "income_tax_reserved", "ib");
+      besteedbaar = pickNumber(d, "disposable", "disposable_income", "besteedbaar");
+      bankSaldo = pickNumber(d, "bank_total", "bank_balance", "banksaldo");
+      btwReservering = pickNumber(d, "vat_reserve", "vat_reservation", "btw_reservering");
+      ibReservering = pickNumber(d, "ib_reserve", "income_tax_reservation", "ib_reservering");
     }
     if (bankBalance.status === "fulfilled" && bankSaldo === null) {
       const b = bankBalance.value.data || bankBalance.value;
@@ -552,7 +552,7 @@ async function handleFinancials(req, res) {
   // Alles parallel ophalen voor snelheid
   const [disposable, bankBalance, deadlines, openInvoices, vatQuarter, vatYear, vatMonth] = await Promise.allSettled([
     boeksyFetch("/v1/dashboard/disposable-income"),
-    boeksyFetch("/v1/dashboard/bank-balance"),
+    boeksyFetch("/v1/bank-accounts"),
     boeksyFetch("/v1/dashboard/deadlines"),
     boeksyFetch("/v1/dashboard/open-invoices"),
     boeksyFetch(`/v1/reports/vat?from=${qFrom}&to=${qTo}`),
@@ -565,10 +565,10 @@ async function handleFinancials(req, res) {
   let besteedbaar = null, bankSaldo = null, btwReservering = null, ibReservering = null;
   if (disposable.status === "fulfilled") {
     const d = disposable.value.data || disposable.value;
-    besteedbaar = pickNumber(d, "disposable_income", "besteedbaar", "spendable", "echt_besteedbaar", "available");
-    bankSaldo = pickNumber(d, "bank_balance", "banksaldo", "balance", "total_balance");
-    btwReservering = pickNumber(d, "vat_reservation", "btw_reservering", "vat_reserved", "btw");
-    ibReservering = pickNumber(d, "income_tax_reservation", "ib_reservering", "income_tax_reserved", "ib");
+    besteedbaar = pickNumber(d, "disposable", "disposable_income", "besteedbaar");
+    bankSaldo = pickNumber(d, "bank_total", "bank_balance", "banksaldo");
+    btwReservering = pickNumber(d, "vat_reserve", "vat_reservation", "btw_reservering");
+    ibReservering = pickNumber(d, "ib_reserve", "income_tax_reservation", "ib_reservering");
   }
 
   // bank-balance fallback voor specifiekere bank-data
@@ -593,22 +593,23 @@ async function handleFinancials(req, res) {
     if (result.status !== "fulfilled") return { reason: result.reason?.message || "ophalen mislukt" };
     const d = result.value.data || result.value;
     return {
-      teBetalen: pickNumber(d, "to_pay", "te_betalen", "balance", "vat_due", "total"),
-      geind: pickNumber(d, "collected", "geind", "vat_collected", "output_vat", "uitgaand"),
-      aftrekbaar: pickNumber(d, "deductible", "aftrekbaar", "vat_deductible", "input_vat", "inkomend"),
+      teBetalen: pickNumber(d, "vat_payable", "to_pay", "te_betalen"),
+      geind: pickNumber(d, "vat_collected", "collected", "geind"),
+      aftrekbaar: pickNumber(d, "vat_deductible", "deductible", "aftrekbaar"),
       from: d.from || d.period_from,
       to: d.to || d.period_to,
     };
   }
 
   // Deadlines voor BTW-aangifte
-  let btwDeadline = null, btwDagen = null, achterstallig = null, ongematched = null;
+  let btwDeadline = null, btwDagen = null, achterstallig = null, ongematched = null, btwPeriodLabel = null;
   if (deadlines.status === "fulfilled") {
     const d = deadlines.value.data || deadlines.value;
-    btwDeadline = d.vat_deadline || d.btw_deadline || d.next_vat_deadline || null;
-    btwDagen = pickNumber(d, "days_until_vat", "btw_dagen", "vat_days_remaining");
-    achterstallig = pickNumber(d, "overdue_invoices", "achterstallig", "overdue_count");
-    ongematched = pickNumber(d, "unmatched_transactions", "ongematcht", "unmatched_count");
+    btwDeadline = d.vat_deadline || null;
+    btwPeriodLabel = d.vat_period_label || null;
+    btwDagen = pickNumber(d, "vat_days_left", "days_until_vat");
+    achterstallig = pickNumber(d, "overdue_invoice_count", "overdue_invoices");
+    ongematched = pickNumber(d, "unmatched_bank_count", "unmatched_transactions");
   }
 
   // Openstaande facturen
@@ -644,6 +645,7 @@ async function handleFinancials(req, res) {
     },
     deadlines: {
       btwDeadline,
+      btwPeriodLabel,
       btwDagenRest: btwDagen,
       achterstalligeFacturen: achterstallig,
       ongematchteTransacties: ongematched,
