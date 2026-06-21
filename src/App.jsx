@@ -3712,7 +3712,8 @@ function Nova({ token, onLogout }) {
       })()}
 
       {showFinancials && (() => {
-        const fmt = (n) => n == null ? "—" : "€ " + Math.round(n).toLocaleString("nl-NL");
+        const fmt = (n) => n == null ? "—" : "€ " + n.toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const fmtInt = (n) => n == null ? "—" : n.toLocaleString("nl-NL");
         const errBox = financials?.error ? (
           <div style={{ padding: "12px 14px", background: "rgba(255,107,138,.1)", border: "1px solid rgba(255,143,163,.4)", borderRadius: 10, marginBottom: 14, fontSize: 12, color: "#FF8FA3" }}>{financials.error}</div>
         ) : null;
@@ -3722,60 +3723,92 @@ function Nova({ token, onLogout }) {
             <div onClick={(e) => e.stopPropagation()} style={{ width: "min(680px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}66`, borderRadius: 16, overflow: "hidden" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${CYAN}33` }}>
                 <span style={{ fontSize: 22 }}>📊</span>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Financieel overzicht</div>
-                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Bankstand, BTW, IB-schatting · afgeleid uit Boeksy</div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Live uit Boeksy dashboard</div>
                 </div>
-                <button onClick={() => loadFinancials(true)} disabled={financialsLoading} title="Opnieuw berekenen" style={{ background: "transparent", border: `1px solid ${CYAN}55`, color: CYAN, borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: financialsLoading ? "wait" : "pointer", marginRight: 6 }}>{financialsLoading ? "⏳" : "🔄"}</button>
-                <button onClick={() => setShowFinancials(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px" }}>×</button>
+                <button onClick={() => loadFinancials(true)} disabled={financialsLoading} title="Opnieuw ophalen" style={{ background: "transparent", border: `1px solid ${CYAN}55`, color: CYAN, borderRadius: 6, padding: "6px 10px", fontSize: 13, cursor: financialsLoading ? "wait" : "pointer", marginRight: 6, minWidth: 36, minHeight: 36 }}>{financialsLoading ? "⏳" : "🔄"}</button>
+                <button onClick={() => setShowFinancials(false)} aria-label="Sluiten" style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(180,210,255,.3)", color: "rgba(220,238,255,.9)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 8px", minWidth: 36, minHeight: 36, borderRadius: 6 }}>×</button>
               </div>
               <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
                 {financialsLoading && !financials && (
-                  <div style={{ padding: 30, textAlign: "center", color: "rgba(180,210,255,.55)", fontSize: 13 }}>Berekenen uit boekhouding...</div>
+                  <div style={{ padding: 30, textAlign: "center", color: "rgba(180,210,255,.55)", fontSize: 13 }}>Ophalen uit Boeksy...</div>
                 )}
                 {errBox}
 
                 {financials && !financials.error && (
                   <>
-                    {/* BESTEEDBAAR - hoofdkaart */}
-                    <div style={{ padding: "16px 18px", marginBottom: 16, background: "linear-gradient(135deg, rgba(56,230,255,.08), rgba(127,119,221,.08))", border: `1px solid ${CYAN}40`, borderRadius: 12 }}>
-                      <div style={{ fontSize: 11, color: CYAN, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 6 }}>💰 Vrij te besteden (geschat)</div>
-                      <div style={{ fontSize: 28, color: financials.besteedbaar?.besteedbaar !== null && financials.besteedbaar.besteedbaar >= 0 ? "#5DCAA5" : "#FF8FA3", fontWeight: 800, lineHeight: 1 }}>
-                        {fmt(financials.besteedbaar?.besteedbaar)}
+                    {/* BESTEEDBAAR - hoofdkaart, precies zoals Boeksy het toont */}
+                    <div style={{ padding: "18px 20px", marginBottom: 16, background: "linear-gradient(135deg, rgba(29,158,117,.10), rgba(56,230,255,.08))", border: "1px solid rgba(29,158,117,.35)", borderRadius: 12 }}>
+                      <div style={{ fontSize: 11, color: "#5DCAA5", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 6 }}>💰 Echt van jou · Besteedbaar</div>
+                      <div style={{ fontSize: 32, color: "#5DCAA5", fontWeight: 800, lineHeight: 1 }}>
+                        {fmt(financials.besteedbaar?.bedrag)}
                       </div>
-                      <div style={{ fontSize: 11, color: "rgba(180,210,255,.65)", marginTop: 6, lineHeight: 1.5 }}>
-                        Bank {fmt(financials.besteedbaar?.bankSaldo)} — BTW reservering {fmt(financials.besteedbaar?.minBtw)} — IB geprojecteerd {fmt(financials.besteedbaar?.minIbGeprojecteerd)}
+                      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(29,158,117,.2)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", padding: "3px 0" }}>
+                          <span>Banksaldo</span>
+                          <span>{fmt(financials.besteedbaar?.bankSaldo)}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#5DCAA5", padding: "3px 0" }}>
+                          <span>− BTW reservering</span>
+                          <span>{financials.besteedbaar?.minBtw != null ? "− " + fmt(financials.besteedbaar.minBtw) : "—"}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#5DCAA5", padding: "3px 0" }}>
+                          <span>− IB reservering</span>
+                          <span>{financials.besteedbaar?.minIb != null ? "− " + fmt(financials.besteedbaar.minIb) : "—"}</span>
+                        </div>
                       </div>
                     </div>
 
                     {/* BANKSTAND */}
-                    <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 11, color: "#5DCAA5", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>🏦 Bankstand</div>
-                      {financials.bank?.saldo !== null ? (
-                        <div style={{ padding: "12px 14px", background: "rgba(29,158,117,.07)", border: "1px solid rgba(29,158,117,.25)", borderRadius: 10 }}>
-                          <div style={{ fontSize: 22, color: "#5DCAA5", fontWeight: 700 }}>{fmt(financials.bank.saldo)}</div>
-                          {financials.bank.accounts && financials.bank.accounts.length > 0 && (
-                            <div style={{ marginTop: 8 }}>
-                              {financials.bank.accounts.map((a, i) => (
-                                <div key={i} style={{ display: "flex", gap: 8, fontSize: 11, color: "rgba(220,238,255,.75)", padding: "3px 0" }}>
-                                  <span style={{ fontFamily: "monospace", color: "rgba(180,210,255,.55)", minWidth: 50 }}>{a.code}</span>
-                                  <span style={{ flex: 1 }}>{a.name}</span>
-                                  <span>{fmt(a.saldo)}</span>
-                                </div>
-                              ))}
+                    {financials.bank?.accounts && financials.bank.accounts.length > 0 && (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 11, color: CYAN, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>🏦 Bankrekeningen</div>
+                        <div style={{ padding: "10px 14px", background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.2)", borderRadius: 10 }}>
+                          {financials.bank.accounts.map((a, i) => (
+                            <div key={i} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: i < financials.bank.accounts.length - 1 ? "1px solid rgba(56,230,255,.08)" : "none", fontSize: 12 }}>
+                              <span style={{ flex: 1, color: "rgba(220,238,255,.85)" }}>{a.name}</span>
+                              {a.iban && <span style={{ color: "rgba(180,210,255,.45)", fontFamily: "monospace", fontSize: 10 }}>{a.iban}</span>}
+                              <span style={{ color: "#fff", fontWeight: 600, minWidth: 90, textAlign: "right" }}>{fmt(a.saldo)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* DEADLINES */}
+                    {(financials.deadlines?.btwDeadline || financials.deadlines?.achterstalligeFacturen != null) && (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>⏰ Deadlines & aandacht</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
+                          {financials.deadlines.btwDeadline && (
+                            <div style={{ padding: "10px 12px", background: "rgba(239,159,39,.08)", border: "1px solid rgba(239,159,39,.25)", borderRadius: 8 }}>
+                              <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)" }}>BTW deadline</div>
+                              <div style={{ fontSize: 14, color: AMBER, fontWeight: 700, marginTop: 3 }}>{financials.deadlines.btwDeadline}</div>
+                              {financials.deadlines.btwDagenRest != null && (
+                                <div style={{ fontSize: 11, color: "rgba(220,238,255,.7)", marginTop: 2 }}>over {financials.deadlines.btwDagenRest} dagen</div>
+                              )}
+                            </div>
+                          )}
+                          {financials.deadlines.achterstalligeFacturen != null && financials.deadlines.achterstalligeFacturen > 0 && (
+                            <div style={{ padding: "10px 12px", background: "rgba(255,107,138,.08)", border: "1px solid rgba(255,143,163,.3)", borderRadius: 8 }}>
+                              <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)" }}>Achterstallig</div>
+                              <div style={{ fontSize: 14, color: "#FF8FA3", fontWeight: 700, marginTop: 3 }}>{financials.deadlines.achterstalligeFacturen} facturen</div>
+                            </div>
+                          )}
+                          {financials.deadlines.ongematchteTransacties != null && financials.deadlines.ongematchteTransacties > 0 && (
+                            <div style={{ padding: "10px 12px", background: "rgba(127,119,221,.08)", border: "1px solid rgba(127,119,221,.3)", borderRadius: 8 }}>
+                              <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)" }}>Ongematcht</div>
+                              <div style={{ fontSize: 14, color: PURPLE, fontWeight: 700, marginTop: 3 }}>{financials.deadlines.ongematchteTransacties} bank</div>
                             </div>
                           )}
                         </div>
-                      ) : (
-                        <div style={{ padding: "10px 12px", background: "rgba(239,159,39,.07)", border: "1px solid rgba(239,159,39,.25)", borderRadius: 8, fontSize: 12, color: "rgba(220,238,255,.8)" }}>
-                          {financials.bank?.reason || "Bankstand kon niet bepaald worden"}
-                        </div>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
-                    {/* BTW */}
+                    {/* BTW PER PERIODE - uit /v1/reports/vat */}
                     <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📋 BTW per periode</div>
+                      <div style={{ fontSize: 11, color: AMBER, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📋 BTW-aangifte per periode</div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
                         {[
                           { label: "Deze maand", data: financials.btw?.maand },
@@ -3785,59 +3818,36 @@ function Nova({ token, onLogout }) {
                           <div key={i} style={{ padding: "10px 12px", background: "rgba(239,159,39,.06)", border: "1px solid rgba(239,159,39,.22)", borderRadius: 8 }}>
                             <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)", marginBottom: 4 }}>{c.label}</div>
                             <div style={{ fontSize: 15, color: AMBER, fontWeight: 700 }}>{fmt(c.data?.teBetalen)}</div>
-                            <div style={{ fontSize: 9, color: "rgba(180,210,255,.5)", marginTop: 4, lineHeight: 1.4 }}>
-                              In {fmt(c.data?.uitgaand)}<br/>Uit {fmt(c.data?.inkomend)}
-                            </div>
+                            {c.data?.reason ? (
+                              <div style={{ fontSize: 9, color: "rgba(255,143,163,.7)", marginTop: 4 }}>{c.data.reason}</div>
+                            ) : (
+                              <div style={{ fontSize: 9, color: "rgba(180,210,255,.5)", marginTop: 4, lineHeight: 1.4 }}>
+                                Geïnd {fmt(c.data?.geind)}<br/>Aftrek {fmt(c.data?.aftrekbaar)}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
-                      {financials.btw?.jaar?.reason && (
-                        <div style={{ fontSize: 11, color: AMBER, marginTop: 6, lineHeight: 1.4 }}>⚠️ {financials.btw.jaar.reason}</div>
-                      )}
                     </div>
 
-                    {/* IB SCHATTING */}
-                    <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 11, color: PURPLE, textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📈 Inkomstenbelasting (schatting)</div>
-                      <div style={{ padding: "12px 14px", background: "rgba(127,119,221,.07)", border: "1px solid rgba(127,119,221,.25)", borderRadius: 10 }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
-                          <div>
-                            <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)" }}>Winst dit jaar (YTD)</div>
-                            <div style={{ fontSize: 15, color: "#E8F1FF", fontWeight: 600 }}>{fmt(financials.ib?.ytdWinst)}</div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 10, color: "rgba(180,210,255,.6)" }}>Projectie jaarwinst</div>
-                            <div style={{ fontSize: 15, color: "#B3ADEE", fontWeight: 600 }}>{fmt(financials.ib?.geprojecteerdeJaarwinst)}</div>
-                          </div>
-                        </div>
-                        <div style={{ paddingTop: 10, borderTop: "1px solid rgba(127,119,221,.15)" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
-                            <span>Zelfstandigenaftrek</span>
-                            <span>- {fmt(financials.ib?.ibGeprojecteerd?.zelfstandigenaftrek)}</span>
-                          </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
-                            <span>MKB-winstvrijstelling (12,03%)</span>
-                            <span>- {fmt(financials.ib?.ibGeprojecteerd?.mkbVrijstelling)}</span>
-                          </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
-                            <span>Belastbare winst</span>
-                            <span>{fmt(financials.ib?.ibGeprojecteerd?.belastbareWinst)}</span>
-                          </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(220,238,255,.85)", marginBottom: 3 }}>
-                            <span>Heffingskortingen</span>
-                            <span>- {fmt(financials.ib?.ibGeprojecteerd?.heffingskortingen)}</span>
-                          </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 700, marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(127,119,221,.2)", color: PURPLE }}>
-                            <span>Geschatte IB jaar 2026</span>
-                            <span>{fmt(financials.ib?.ibGeprojecteerd?.totalTax)}</span>
-                          </div>
+                    {/* OPENSTAAND */}
+                    {financials.openstaand?.totaal != null && (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 11, color: "#FF8FA3", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700, marginBottom: 8 }}>📃 Openstaande facturen</div>
+                        <div style={{ padding: "12px 14px", background: "rgba(255,107,138,.06)", border: "1px solid rgba(255,143,163,.25)", borderRadius: 10 }}>
+                          <div style={{ fontSize: 20, color: "#FF8FA3", fontWeight: 700 }}>{fmt(financials.openstaand.totaal)}</div>
+                          {financials.openstaand.facturen && financials.openstaand.facturen.length > 0 && (
+                            <div style={{ marginTop: 8, fontSize: 11, color: "rgba(180,210,255,.65)" }}>
+                              {financials.openstaand.facturen.length} factuur{financials.openstaand.facturen.length === 1 ? "" : "en"} openstaand
+                            </div>
+                          )}
                         </div>
                       </div>
-                    </div>
+                    )}
 
-                    {/* WAARSCHUWING */}
+                    {/* BRON-info */}
                     <div style={{ padding: "10px 12px", background: "rgba(56,230,255,.04)", border: "1px solid rgba(56,230,255,.2)", borderRadius: 8, fontSize: 11, color: "rgba(180,210,255,.75)", lineHeight: 1.5 }}>
-                      <strong style={{ color: CYAN }}>Schatting, geen aangifte.</strong> Cijfers zijn afgeleid uit Boeksy-boekhouding op basis van Nederlandse 2026-tarieven (zelfstandigenaftrek €1.200, MKB-vrijstelling 12,03%, schijven 35,82% / 37,48% / 49,50%). Werkelijke aangifte hangt af van factoren die we niet kennen (partner, hypotheek, toeslagen). Raadpleeg je accountant.
+                      <strong style={{ color: CYAN }}>Bron: Boeksy.</strong> Alle cijfers hierboven komen rechtstreeks uit het Boeksy dashboard. Geen schattingen, geen herberekeningen — dit is wat ook in jouw Boeksy-app staat.
                     </div>
                   </>
                 )}
@@ -3847,12 +3857,13 @@ function Nova({ token, onLogout }) {
         );
       })()}
 
+
       {showBoeksy && boeksy && (
         <div onClick={() => setShowBoeksy(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 26, padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(720px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: "1px solid rgba(29,158,117,.3)", borderRadius: 16, overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: "1px solid rgba(29,158,117,.2)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: "1px solid rgba(29,158,117,.2)", flexWrap: "wrap" }}>
               <span style={{ fontSize: 22 }}>💼</span>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Boekhouding (Boeksy)</div>
                 <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>Live alleen-lezen koppeling · klanten, facturen, offertes, W&amp;V</div>
               </div>
@@ -3871,7 +3882,7 @@ function Nova({ token, onLogout }) {
                   setMessages((m) => [...m, { role: "assistant", content: "Diagnose mislukt: " + e.message }]);
                 }
               }} title="Test welke Boeksy endpoints werken" style={{ background: "rgba(239,159,39,.1)", border: `1px solid ${AMBER}55`, color: AMBER, borderRadius: 8, padding: "6px 12px", fontSize: 11, cursor: "pointer", fontWeight: 600, marginRight: 6 }}>🔍 Diagnose</button>
-              <button onClick={() => setShowBoeksy(false)} aria-label="Sluiten" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.7)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 4px", minWidth: 32, minHeight: 32 }}>×</button>
+              <button onClick={() => setShowBoeksy(false)} aria-label="Sluiten" style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(180,210,255,.3)", color: "rgba(220,238,255,.9)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 8px", minWidth: 36, minHeight: 36, borderRadius: 6 }}>×</button>
             </div>
             <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
               {boeksy.followUps && boeksy.followUps.length > 0 && (
