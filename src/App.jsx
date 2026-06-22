@@ -49,6 +49,7 @@ function parseReply(raw) {
   let post = null;
   let voice = null;
   let quote = null; // {relation, subject, eventDate, lines: [{description, quantity, unit_price, vat_rate}]}
+  let sendMail = null; // {to, subject, body}
   const kept = [];
   for (const line of lines) {
     const a = line.match(/^\s*ACTIES\s*:\s*(.+)$/i);
@@ -59,6 +60,7 @@ function parseReply(raw) {
     const ps = line.match(/^\s*POST\s*:\s*(.+)$/i);
     const st = line.match(/^\s*STEM\s*:\s*(.+)$/i);
     const oq = line.match(/^\s*OFFERTE\s*:\s*(.+)$/i);
+    const sm = line.match(/^\s*SEND_MAIL\s*:\s*(.+)$/i);
     if (a) {
       actions = a[1].split("|").map((s) => s.trim()).filter(Boolean).slice(0, 4);
     } else if (t) {
@@ -98,6 +100,16 @@ function parseReply(raw) {
           };
         }
       }
+    } else if (sm) {
+      // SEND_MAIL: ontvanger | onderwerp | bericht
+      const parts = sm[1].split("|").map((s) => s.trim());
+      if (parts.length >= 3) {
+        sendMail = {
+          to: parts[0],
+          subject: parts[1],
+          body: parts.slice(2).join(" | "),
+        };
+      }
     } else if (st) {
       const cmd = st[1].trim().toLowerCase();
       if (/^rate\s*=/.test(cmd)) {
@@ -112,7 +124,7 @@ function parseReply(raw) {
       kept.push(line);
     }
   }
-  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post, voice, quote };
+  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post, voice, quote, sendMail };
 }
 
 // Bereken aankomende events uit Boeksy-data. Een event is een offerte of factuur
@@ -730,6 +742,7 @@ function Nova({ token, onLogout }) {
   const [showOnboard, setShowOnboard] = useState(false);
   const [openOnboard, setOpenOnboard] = useState(null);
   const [pendingWA, setPendingWA] = useState(null); // {to, message} wachtend op akkoord
+  const [pendingMail, setPendingMail] = useState(null); // {to, subject, body} wachtend op akkoord
   const [pendingQuote, setPendingQuote] = useState(null); // {relation, subject, event_date, lines} wachtend op akkoord
   const [posts, setPosts] = useState([]); // multi-agent contentposts
   const [openPost, setOpenPost] = useState(null); // post-id dat geopend is
@@ -891,54 +904,46 @@ function Nova({ token, onLogout }) {
       // WhatsApp gebruikt eigen read-flag van backend, prima
       const waNieuw = waInbox.filter((m) => !m.read).length;
 
-      // Formuleer het mail-stuk afhankelijk van aantal en urgentie
-      const mailStuk = mailCount === 0 ? "" :
-        mailCount === 1 ? `één nieuwe mail${urgent ? " die je aandacht vraagt" : ""}` :
-        urgent > 0 ? `${mailCount} mails, waarvan ${urgent} die je aandacht vragen` :
-        `${mailCount} nieuwe mails`;
-      const impStuk = impCount === 0 ? "" :
-        impCount === 1 ? "één verbeterpunt voor de volgende update" :
-        `${impCount} verbeterpunten`;
-      const waStuk = waNieuw === 0 ? "" :
-        waNieuw === 1 ? "één WhatsApp-bericht" : `${waNieuw} WhatsApp-berichten`;
-
-      const delen = [mailStuk, impStuk, waStuk].filter(Boolean);
+      // PROACTIEVE BRIEFING - geen opsomming maar voorstellen voor vandaag.
+      // Een goede assistent zegt niet "je hebt X, Y, Z" maar "ik stel voor dat je
+      // vandaag dit oppakt: ...". We bouwen één tot drie concrete suggesties.
       const groetMetNaam = `${groet}${naam ? ", " + naam : ""}`;
+      const followUps = (dB?.followUps || []).filter((f) => f.daysOpen >= 14);
+      const oldestFollowUp = followUps.sort((a, b) => b.daysOpen - a.daysOpen)[0];
 
-      // Verschillende openingsvarianten - random gekozen voor variatie
-      const sluitvragen = [
-        "Waar wil je mee beginnen?",
-        "Waar zal ik je mee helpen?",
-        "Wat staat er op het programma?",
-        "Wat wil je als eerste oppakken?",
-        "Zal ik ergens mee starten?",
-      ];
-      const sluit = sluitvragen[Math.floor(Math.random() * sluitvragen.length)];
+      // Bouw de suggesties op basis van wat er werkelijk aandacht vraagt
+      const suggesties = [];
+      if (urgent > 0) {
+        suggesties.push(`er ${urgent === 1 ? "is" : "zijn"} ${urgent} mail${urgent === 1 ? "" : "s"} die je aandacht vraag${urgent === 1 ? "t" : "en"}`);
+      } else if (mailCount > 0) {
+        suggesties.push(`er ${mailCount === 1 ? "is" : "zijn"} ${mailCount} nieuwe mail${mailCount === 1 ? "" : "s"} binnen`);
+      }
+      if (oldestFollowUp) {
+        suggesties.push(`offerte ${oldestFollowUp.number || ""} staat al ${oldestFollowUp.daysOpen} dagen open zonder reactie`);
+      } else if (followUps.length > 0) {
+        suggesties.push(`er zijn ${followUps.length} offertes die follow-up nodig hebben`);
+      }
+      if (waNieuw > 0) {
+        suggesties.push(`${waNieuw} WhatsApp-bericht${waNieuw === 1 ? "" : "en"} ${waNieuw === 1 ? "ligt" : "liggen"} te wachten`);
+      }
 
       let tekst;
-      if (delen.length === 0) {
-        // Niets te melden - lichte variatie
+      if (suggesties.length === 0) {
         const lege = [
-          `${groetMetNaam}. Niks dat schreeuwt om aandacht. ${sluit}`,
-          `${groetMetNaam}. Geen openstaande zaken. ${sluit}`,
-          `${groetMetNaam}. Alles staat rustig op zijn plek. ${sluit}`,
-          `${groetMetNaam}. Klaar om weer aan de slag te gaan. ${sluit}`,
+          `${groetMetNaam}. Niks dat schreeuwt om aandacht. Waar wil je mee beginnen?`,
+          `${groetMetNaam}. Geen openstaande zaken. Wat staat er op het programma?`,
+          `${groetMetNaam}. Alles staat rustig. Waar zal ik je mee helpen?`,
         ];
         tekst = lege[Math.floor(Math.random() * lege.length)];
+      } else if (suggesties.length === 1) {
+        // Eén ding: stel meteen actie voor
+        tekst = `${groetMetNaam}. ${suggesties[0].charAt(0).toUpperCase() + suggesties[0].slice(1)}. Zal ik daarmee beginnen?`;
       } else {
-        // Lijst aan elkaar plakken: "x en y" of "x, y en z"
-        const lijst = delen.length === 1 ? delen[0] :
-          delen.length === 2 ? `${delen[0]} en ${delen[1]}` :
-          `${delen.slice(0, -1).join(", ")} en ${delen.slice(-1)[0]}`;
-
-        const intros = [
-          `${groetMetNaam}. Sinds vorige keer zijn er ${lijst}. ${sluit}`,
-          `${groetMetNaam}, fijn dat je er bent. Er liggen ${lijst}. ${sluit}`,
-          `${groetMetNaam}. Ik heb ${lijst} voor je. ${sluit}`,
-          `${groetMetNaam}. Even bijpraten: ${lijst}. ${sluit}`,
-          `${groetMetNaam}. Een kort overzicht: ${lijst}. ${sluit}`,
-        ];
-        tekst = intros[Math.floor(Math.random() * intros.length)];
+        // Meerdere: noem ze, vraag voorkeur
+        const lijst = suggesties.length === 2
+          ? `${suggesties[0]} en ${suggesties[1]}`
+          : `${suggesties.slice(0, -1).join(", ")} en ${suggesties.slice(-1)[0]}`;
+        tekst = `${groetMetNaam}. Drie dingen die nu aandacht vragen: ${lijst}. Waar wil je beginnen?`;
       }
 
       // Eenmalige hint als mail nog niet gekoppeld is - geen status-melding maar context
@@ -2462,7 +2467,7 @@ function Nova({ token, onLogout }) {
     setMessages(next); setInput(""); setBusy(true); setActions([]); setStatus("NOVA denkt na...");
     try {
       const raw = await callBackend(next.map((m) => ({ role: m.role, content: m.content })));
-      const { reply, actions: acts, task, improve, plan, whatsapp, post, voice, quote } = parseReply(raw);
+      const { reply, actions: acts, task, improve, plan, whatsapp, post, voice, quote, sendMail } = parseReply(raw);
       const finalReply = reply || "Sorry, ik kon even niet reageren.";
       setMessages((p) => [...p, { role: "assistant", content: finalReply }]);
       setStatus("Online · klaar voor je opdracht");
@@ -2477,6 +2482,7 @@ function Nova({ token, onLogout }) {
       if (improve) addImprovement(improve);
       if (plan) addToCalendar(plan);
       if (whatsapp) setPendingWA(whatsapp);
+      if (sendMail) setPendingMail(sendMail);
       if (post) startPostWorkflow(post);
       if (quote) setPendingQuote(quote);
       if (acts.length) setTimeout(() => placeActions(acts), 400);
@@ -4154,6 +4160,76 @@ function Nova({ token, onLogout }) {
           </div>
         </div>
       )}
+      {pendingMail && (
+        <div onClick={() => setPendingMail(null)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(520px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
+            <div style={{ padding: "16px 20px 12px", borderBottom: `1px solid ${CYAN}33` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 22 }}>✉️</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Mail versturen?</div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>NOVA wacht op je goedkeuring</div>
+                </div>
+                <button onClick={() => setPendingMail(null)} aria-label="Sluiten" style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(180,210,255,.3)", color: "rgba(220,238,255,.9)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 8px", minWidth: 36, minHeight: 36, borderRadius: 6 }}>×</button>
+              </div>
+            </div>
+            <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 20px" }}>
+              <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", marginBottom: 4 }}>Aan</div>
+              <input
+                type="email"
+                value={pendingMail.to}
+                onChange={(e) => setPendingMail({ ...pendingMail, to: e.target.value })}
+                style={{ width: "100%", background: "rgba(4,18,43,.6)", border: `1px solid ${CYAN}40`, borderRadius: 8, padding: "8px 10px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "monospace", boxSizing: "border-box", marginBottom: 12 }}
+              />
+              <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", marginBottom: 4 }}>Onderwerp</div>
+              <input
+                type="text"
+                value={pendingMail.subject}
+                onChange={(e) => setPendingMail({ ...pendingMail, subject: e.target.value })}
+                style={{ width: "100%", background: "rgba(4,18,43,.6)", border: `1px solid ${CYAN}40`, borderRadius: 8, padding: "8px 10px", color: "#E8F1FF", fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 12 }}
+              />
+              <div style={{ fontSize: 11, color: "rgba(180,210,255,.55)", marginBottom: 4 }}>Bericht</div>
+              <textarea
+                value={pendingMail.body}
+                onChange={(e) => setPendingMail({ ...pendingMail, body: e.target.value })}
+                rows={10}
+                style={{ width: "100%", background: "rgba(4,18,43,.6)", border: `1px solid ${CYAN}40`, borderRadius: 8, padding: "10px 12px", color: "#E8F1FF", fontSize: 13, outline: "none", fontFamily: "inherit", lineHeight: 1.5, resize: "vertical", boxSizing: "border-box" }}
+              />
+              <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 8, lineHeight: 1.4 }}>
+                Je kunt de tekst aanpassen voor je verstuurt. Mail gaat via je eigen mailaccount.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: `1px solid ${CYAN}22` }}>
+              <button onClick={() => setPendingMail(null)} style={{ flex: 1, border: "1px solid rgba(255,107,138,.5)", borderRadius: 10, padding: "10px", background: "rgba(255,107,138,.1)", color: "#FF8FA3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Annuleren</button>
+              <button onClick={async () => {
+                const m = pendingMail;
+                setPendingMail(null);
+                setStatus("Mail versturen...");
+                try {
+                  const r = await fetch("/api/mail?action=send", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+                    body: JSON.stringify(m),
+                  });
+                  const d = await r.json();
+                  if (r.ok) {
+                    setMessages((x) => [...x, { role: "assistant", content: `✓ Mail verstuurd naar ${m.to}.` }]);
+                    setStatus("Klaar");
+                    setToast({ icon: "✉️", text: "Mail verstuurd", color: "#5DCAA5" });
+                    setTimeout(() => setToast(null), 2500);
+                  } else {
+                    setMessages((x) => [...x, { role: "assistant", content: `⚠️ Mail versturen mislukt: ${d.error || "onbekende fout"}` }]);
+                    setStatus("Mail-fout");
+                  }
+                } catch (e) {
+                  setMessages((x) => [...x, { role: "assistant", content: `⚠️ Verbindingsfout bij mail: ${e.message}` }]);
+                }
+              }} style={{ flex: 1, border: "none", borderRadius: 10, padding: "10px", background: `linear-gradient(135deg, ${CYAN}, ${PURPLE})`, color: "#04122B", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Versturen</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDocs && (
         <div onClick={() => setShowDocs(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 30, padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(620px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
