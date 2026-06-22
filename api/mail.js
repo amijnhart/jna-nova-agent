@@ -171,16 +171,94 @@ async function handleSettings(req, res) {
 
 // --- ROUTER ---
 
+// --- SEND (SMTP via nodemailer) ---
+// Verstuurt mail via dezelfde provider als IMAP (meestal). Verwacht:
+//   - SMTP_HOST en SMTP_PORT in env (vaak respectievelijk imap-host met poort 465 of 587)
+//   - of: gebruikt IMAP_HOST/USER/PASS met een raden van SMTP-host (host vervangen 'imap' door 'smtp')
+async function getSmtpConfig() {
+  // Eerste keus: expliciete SMTP env vars
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    return {
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT) || 465,
+      secure: Number(process.env.SMTP_PORT) !== 587, // 465 = secure, 587 = STARTTLS
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    };
+  }
+  // Tweede keus: IMAP-credentials hergebruiken (vaak dezelfde server)
+  const imap = await getImapConfig();
+  if (imap) {
+    const smtpHost = imap.host.replace(/^imap\./, "smtp.");
+    return {
+      host: smtpHost,
+      port: 465,
+      secure: true,
+      auth: { user: imap.user, pass: imap.pass },
+      from: imap.user,
+    };
+  }
+  return null;
+}
+
+async function handleSend(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "POST vereist" });
+  const cfg = await getSmtpConfig();
+  if (!cfg) return res.status(503).json({ error: "SMTP niet geconfigureerd. Voeg SMTP_HOST/SMTP_USER/SMTP_PASS toe in Vercel, of gebruik IMAP-credentials als die ook voor SMTP werken." });
+
+  const { to, subject, body, cc, bcc, replyTo } = req.body || {};
+  if (!to || !subject || !body) return res.status(400).json({ error: "to, subject en body zijn verplicht" });
+
+  // Veiligheid: voorkom dat NOVA per ongeluk spam-doelen aanvalt
+  // Maximum 5 ontvangers per call.
+  const toList = Array.isArray(to) ? to : [to];
+  if (toList.length > 5) return res.status(400).json({ error: "Maximaal 5 ontvangers per mail" });
+
+  try {
+    const nodemailer = await import("nodemailer");
+    const transporter = nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.secure,
+      auth: cfg.auth,
+    });
+
+    // Verbinding eerst testen om gerichte foutmelding terug te geven
+    await transporter.verify();
+
+    const info = await transporter.sendMail({
+      from: cfg.from,
+      to: toList.join(", "),
+      cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc) : undefined,
+      bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc) : undefined,
+      replyTo,
+      subject,
+      text: body,
+      html: body.includes("<") ? body : body.replace(/\n/g, "<br>"),
+    });
+
+    return res.status(200).json({
+      ok: true,
+      messageId: info.messageId,
+      to: toList,
+      subject,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Versturen mislukt: " + (err.message || "onbekend") });
+  }
+}
+
 export default async function handler(req, res) {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!verifyToken(token)) return res.status(401).json({ error: "Niet ingelogd." });
 
   try {
-    const action = req.query.action || "inbox"; // default = inbox
+    const action = req.query.action || "inbox";
     if (action === "inbox") return await handleInbox(req, res);
     if (action === "settings") return await handleSettings(req, res);
-    return res.status(400).json({ error: "Onbekende action. Gebruik ?action=inbox of ?action=settings." });
+    if (action === "send") return await handleSend(req, res);
+    return res.status(400).json({ error: "Onbekende action. Gebruik ?action=inbox, settings of send." });
   } catch (err) {
     console.error("Mail fout:", err.message);
     return res.status(500).json({ error: "Mail-fout: " + err.message });
