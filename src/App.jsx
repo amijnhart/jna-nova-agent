@@ -645,6 +645,11 @@ function Nova({ token, onLogout }) {
   const [emails, setEmails] = useState([]); // recente mails uit IMAP-inbox, meegestuurd naar chat als context
   const [boeksy, setBoeksy] = useState(null); // {configured, relations, invoices, quotes, profitLoss}
   const [showBoeksy, setShowBoeksy] = useState(false);
+  // Mail-inbox paneel met classify + draft-reply (Sprint 1).
+  // Heel mail-paneel triggert /api/mail?action=classify zodat NOVA elke mail kan labelen.
+  const [showMailbox, setShowMailbox] = useState(false);
+  const [mailboxData, setMailboxData] = useState(null); // {mails: [{id, from, subject, classification: {category, intent}}]}
+  const [mailboxLoading, setMailboxLoading] = useState(false);
   const [openAgentDetail, setOpenAgentDetail] = useState(null); // {postId, role}
   const [agentFeedbackDraft, setAgentFeedbackDraft] = useState({}); // role -> tekst
   const [status, setStatus] = useState("Online · klaar voor je opdracht");
@@ -1133,6 +1138,49 @@ function Nova({ token, onLogout }) {
   function openFinancials() {
     setShowFinancials(true);
     loadFinancials();
+  }
+
+  // Mail-inbox openen + classify draaien op de achtergrond.
+  // Bij eerste opening kan classify 5-15 seconden duren door Claude-call;
+  // bij volgende openingen is alles gecached in Redis.
+  async function openMailbox() {
+    setShowMailbox(true);
+    setMailboxLoading(true);
+    try {
+      const r = await fetch("/api/mail?action=classify", { headers: { Authorization: "Bearer " + token } });
+      const d = await r.json();
+      if (r.ok) setMailboxData(d);
+      else setMailboxData({ error: d.error });
+    } catch (e) {
+      setMailboxData({ error: e.message });
+    } finally {
+      setMailboxLoading(false);
+    }
+  }
+
+  // Voor een specifieke mail: vraag NOVA een conceptantwoord op te stellen,
+  // en open daarna de bestaande mail-goedkeur modal zodat de gebruiker kan
+  // bijschaven voor versturen.
+  async function draftReplyFor(mailId) {
+    setStatus("Concept opstellen...");
+    try {
+      const r = await fetch(`/api/mail?action=draft-reply&id=${encodeURIComponent(mailId)}`, {
+        headers: { Authorization: "Bearer " + token },
+      });
+      const d = await r.json();
+      if (r.ok && d.to) {
+        // Open de bestaande mail-goedkeur modal met het concept
+        setPendingMail({ to: d.to, subject: d.subject, body: d.body });
+        setShowMailbox(false); // Mail-inbox dichtdoen zodat goedkeur-modal voorgrond wordt
+        setStatus("Klaar");
+      } else {
+        setMessages((m) => [...m, { role: "assistant", content: "Concept opstellen mislukt: " + (d.error || "onbekend") }]);
+        setStatus("Fout");
+      }
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: "Verbindingsfout: " + e.message }]);
+      setStatus("Fout");
+    }
   }
 
   async function addImprovement(text) {
@@ -2698,6 +2746,7 @@ function Nova({ token, onLogout }) {
               { label: "Wat staat er morgen?", action: () => { sendMessage("Wat staat er morgen?"); setOrbMenuOpen(false); } },
               { label: "Maak een post", action: () => { sendMessage("Maak een post"); setOrbMenuOpen(false); } },
               { label: "Open boekhouding", action: () => { setShowBoeksy(true); setOrbMenuOpen(false); } },
+              { label: "📬 Mail-inbox", action: () => { openMailbox(); setOrbMenuOpen(false); } },
               { label: "Open kalender", action: () => { setShowCalendar(true); setOrbMenuOpen(false); } },
             ];
             return items.map((it, i) => {
@@ -3866,6 +3915,68 @@ function Nova({ token, onLogout }) {
         );
       })()}
 
+      {showMailbox && (() => {
+        const catColor = (c) => {
+          const m = { lead: "#5DCAA5", klant: "#38E6FF", urgent: "#FF8FA3", spam: "rgba(180,210,255,.3)", leverancier: "#7F77DD", overig: "rgba(180,210,255,.6)" };
+          return m[c] || "rgba(180,210,255,.6)";
+        };
+        const mails = mailboxData?.mails || [];
+        return (
+          <div onClick={() => setShowMailbox(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 28, padding: 20 }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "min(720px, 100%)", maxHeight: "92vh", display: "flex", flexDirection: "column", background: "#06182F", border: `1px solid ${CYAN}55`, borderRadius: 16, overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 20px", borderBottom: `1px solid ${CYAN}33`, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 22 }}>📬</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Mail-inbox</div>
+                  <div style={{ fontSize: 11, color: "rgba(180,210,255,.6)" }}>NOVA classificeert + stelt antwoorden voor</div>
+                </div>
+                <button onClick={() => openMailbox()} disabled={mailboxLoading} title="Opnieuw classificeren" style={{ background: "transparent", border: `1px solid ${CYAN}55`, color: CYAN, borderRadius: 6, padding: "6px 10px", fontSize: 13, cursor: mailboxLoading ? "wait" : "pointer", minWidth: 36, minHeight: 36 }}>{mailboxLoading ? "⏳" : "🔄"}</button>
+                <button onClick={() => setShowMailbox(false)} aria-label="Sluiten" style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(180,210,255,.3)", color: "rgba(220,238,255,.9)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 8px", minWidth: 36, minHeight: 36, borderRadius: 6 }}>×</button>
+              </div>
+              <div className="nova-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 18px" }}>
+                {mailboxLoading && mails.length === 0 && (
+                  <div style={{ padding: 30, textAlign: "center", color: "rgba(180,210,255,.55)", fontSize: 13 }}>NOVA leest en classificeert je mails...</div>
+                )}
+                {mailboxData?.error && (
+                  <div style={{ padding: "12px 14px", background: "rgba(255,107,138,.1)", border: "1px solid rgba(255,143,163,.4)", borderRadius: 10, fontSize: 12, color: "#FF8FA3" }}>{mailboxData.error}</div>
+                )}
+                {mails.length === 0 && !mailboxLoading && !mailboxData?.error && (
+                  <div style={{ padding: 30, textAlign: "center", color: "rgba(180,210,255,.55)", fontSize: 13 }}>Geen mails gevonden.</div>
+                )}
+                {mails.map((m) => {
+                  const cls = m.classification;
+                  const datum = m.received ? new Date(m.received).toLocaleDateString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+                  return (
+                    <div key={m.id} style={{ padding: "12px 14px", background: m.unread ? "rgba(56,230,255,.06)" : "rgba(255,255,255,.02)", border: `1px solid ${m.unread ? CYAN + "33" : "rgba(180,210,255,.15)"}`, borderRadius: 10, marginBottom: 10 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                        {cls && (
+                          <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", padding: "2px 7px", borderRadius: 4, background: catColor(cls.category) + "22", color: catColor(cls.category), border: `1px solid ${catColor(cls.category)}66` }}>{cls.category}</span>
+                        )}
+                        {cls?.intent && (
+                          <span style={{ fontSize: 9, color: "rgba(180,210,255,.7)", padding: "2px 6px", borderRadius: 4, background: "rgba(255,255,255,.04)" }}>{cls.intent}</span>
+                        )}
+                        <span style={{ flex: 1 }} />
+                        <span style={{ fontSize: 10, color: "rgba(180,210,255,.55)" }}>{datum}</span>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#fff", marginBottom: 2 }}>{m.subject || "(geen onderwerp)"}</div>
+                      <div style={{ fontSize: 11, color: "rgba(180,210,255,.7)" }}>{m.fromName ? `${m.fromName} <${m.from}>` : m.from}</div>
+                      {cls?.reden && (
+                        <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 4, fontStyle: "italic" }}>{cls.reden}</div>
+                      )}
+                      {cls?.intent && /vraag|offerte|follow-up|klacht/.test(cls.intent) && (
+                        <button onClick={() => draftReplyFor(m.id)} style={{ marginTop: 8, background: `linear-gradient(135deg, ${CYAN}, ${PURPLE})`, border: "none", color: "#04122B", borderRadius: 8, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✍️ Concept opstellen</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ padding: "10px 16px", borderTop: `1px solid ${CYAN}22`, fontSize: 10, color: "rgba(180,210,255,.5)" }}>
+                Concepten worden voorgesteld - jij goedkeurt voor verzending.
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {showBoeksy && boeksy && (
         <div onClick={() => setShowBoeksy(false)} style={{ position: "absolute", inset: 0, background: "rgba(2,10,26,.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 26, padding: 20 }}>
