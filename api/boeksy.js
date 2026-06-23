@@ -235,9 +235,12 @@ function isActueel(item) {
   const status = (item.status || "").toLowerCase();
   // Verberg alles wat geannuleerd, verwijderd, archief, of expliciet afgesloten is.
   // De business-logica: dit zijn items waar geen actie meer op nodig is.
+  // Inclusief afgewezen/geweigerd voor offertes - die zijn definitief klaar.
   const verbergen = [
     "cancelled", "canceled", "deleted", "archived", "voided", "void",
     "geannuleerd", "verwijderd", "gearchiveerd", "vervallen",
+    "rejected", "declined", "afgewezen", "geweigerd",
+    "expired", "verlopen", "ingetrokken", "withdrawn",
   ];
   if (verbergen.some((v) => status.includes(v))) return false;
   return true;
@@ -421,17 +424,45 @@ async function handleOverview(req, res) {
 
   // FOLLOW-UPS: offertes die ouder zijn dan 14 dagen en niet zijn geaccepteerd/afgewezen.
   // NOVA stuurt geen mail; Boeksy heeft daar zelf een functie voor.
+  //
+  // FILTER-LOGICA: we tonen ALLEEN offertes met status 'concept' of 'verzonden'/'open'.
+  // Geweigerd, geaccepteerd, vervallen, ingetrokken, verwijderd worden uitgesloten.
+  // Boeksy gebruikt mogelijk varianten in NL/EN; we matchen beide voor robuustheid.
   if (quotes.status === "fulfilled") {
     const followUps = [];
+    const allStatussen = []; // diagnose: welke statussen zien we echt langskomen
     const fourteenDaysAgo = nowMs - 14 * 24 * 60 * 60 * 1000;
+    // Statussen die wél in follow-up mogen verschijnen (positieve filter)
+    const toegestaan = new Set([
+      "concept", "draft",
+      "verzonden", "sent", "open", "verstuurd",
+      "deels_betaald", "partly_paid",
+    ]);
+    // Expliciete uitsluit-lijst als backup voor wanneer status niet in toegestaan zit
+    const uitsluiten = new Set([
+      "geaccepteerd", "accepted",
+      "afgewezen", "rejected", "geweigerd", "declined",
+      "expired", "verlopen", "vervallen",
+      "ingetrokken", "withdrawn", "cancelled", "canceled", "geannuleerd",
+      "deleted", "verwijderd", "archived", "gearchiveerd",
+      "voided", "void", "paid", "betaald",
+    ]);
     for (const q of (quotes.value.data || [])) {
-      const status = (q.status || "").toLowerCase();
-      // Status-namen verschillen; we filteren wat zeker NIET follow-up vereist
-      if (["geaccepteerd", "accepted", "afgewezen", "rejected", "expired", "verlopen", "ingetrokken"].includes(status)) continue;
+      const status = (q.status || "").toLowerCase().trim();
+      if (status) allStatussen.push(status);
+
+      // Eerst: zit hij in de uitsluit-lijst? Dan stoppen.
+      if (uitsluiten.has(status)) continue;
+
+      // Tweede: zit hij NIET in de toegestaan-lijst? Dan ook stoppen.
+      // Dit beschermt tegen onbekende statussen waar we niet zeker van zijn.
+      if (status && !toegestaan.has(status)) continue;
+
       const date = q.quote_date || q.date;
       if (!date) continue;
       const ms = new Date(date).getTime();
-      if (isNaN(ms) || ms > fourteenDaysAgo) continue; // nog te jong voor follow-up
+      if (isNaN(ms) || ms > fourteenDaysAgo) continue;
+
       followUps.push({
         id: q.id,
         number: q.number || q.quote_number || null,
@@ -443,9 +474,15 @@ async function handleOverview(req, res) {
         ageDays: Math.floor((nowMs - ms) / (24 * 60 * 60 * 1000)),
       });
     }
-    // Oudste eerst zodat NOVA de meest dringende bovenaan zet
     followUps.sort((a, b) => b.ageDays - a.ageDays);
     result.followUps = followUps;
+    // Diagnose: welke statussen kwamen we tegen?
+    // Hulpvol om te zien of er statussen zijn die we nog niet kennen.
+    result.followUpsDiagnose = {
+      uniekStatussen: [...new Set(allStatussen)].sort(),
+      totaalOffertes: (quotes.value.data || []).length,
+      naFilter: followUps.length,
+    };
   }
 
   // FINANCIALS LIGHT uit Boeksy dashboard endpoints.
