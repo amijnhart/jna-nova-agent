@@ -169,9 +169,250 @@ async function handleSettings(req, res) {
   return res.status(405).json({ error: "Methode niet toegestaan" });
 }
 
-// --- ROUTER ---
+// --- SPRINT 1: EMAIL PIPELINE (classify + draft-reply) ---
+// Sprint 1a: classify mails op categorie en intent in één Claude-call
+// Sprint 1b: draft-reply genereert JnA-stijl conceptantwoord per mail
 
-// --- SEND (SMTP via nodemailer) ---
+async function fetchSpecificMail(uid) {
+  const cfg = await getImapConfig();
+  if (!cfg) return null;
+  const { ImapFlow } = await import("imapflow");
+  const { simpleParser } = await import("mailparser");
+  const client = new ImapFlow({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
+    logger: false,
+  });
+  let mail = null;
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const msg = await client.fetchOne(uid, { envelope: true, source: true, flags: true });
+      if (msg) {
+        let body = "";
+        try {
+          const parsed = await simpleParser(msg.source);
+          body = (parsed.text || "").trim();
+        } catch { /* */ }
+        mail = {
+          id: "mail-" + msg.uid,
+          uid: msg.uid,
+          from: msg.envelope.from?.[0]?.address || "",
+          fromName: msg.envelope.from?.[0]?.name || "",
+          subject: msg.envelope.subject || "",
+          received: msg.envelope.date,
+          body,
+        };
+      }
+    } finally { lock.release(); }
+  } finally {
+    await client.logout().catch(() => {});
+  }
+  return mail;
+}
+
+async function handleClassify(req, res) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: "Claude niet geconfigureerd" });
+
+  // Pak laatste mails uit inbox - gebruik dezelfde IMAP-fetch
+  const cfg = await getImapConfig();
+  if (!cfg) return res.status(503).json({ error: "Mail niet gekoppeld" });
+
+  // Hergebruik bestaande fetcher
+  const { ImapFlow } = await import("imapflow");
+  const { simpleParser } = await import("mailparser");
+  const client = new ImapFlow({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
+    logger: false,
+  });
+
+  const mails = [];
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const mailbox = await client.mailboxOpen("INBOX");
+      const limit = Math.min(20, mailbox.exists);
+      const start = Math.max(1, mailbox.exists - limit + 1);
+      for await (const msg of client.fetch(`${start}:*`, { envelope: true, source: true, flags: true })) {
+        let snippet = "";
+        try {
+          const parsed = await simpleParser(msg.source);
+          snippet = (parsed.text || "").trim().slice(0, 300);
+        } catch { /* */ }
+        mails.push({
+          id: "mail-" + msg.uid,
+          uid: msg.uid,
+          from: msg.envelope.from?.[0]?.address || "",
+          fromName: msg.envelope.from?.[0]?.name || "",
+          subject: msg.envelope.subject || "",
+          snippet,
+          received: msg.envelope.date,
+          unread: !msg.flags.has("\\Seen"),
+        });
+      }
+    } finally { lock.release(); }
+  } finally {
+    await client.logout().catch(() => {});
+  }
+
+  // Cache eerst: heeft mail-id al een classificatie?
+  const cacheKey = "mail_classifications";
+  const cached = (await readData(cacheKey)) || {};
+  const teClassificeren = mails.filter((m) => !cached[m.id]);
+
+  if (teClassificeren.length > 0) {
+    // Eén Claude-call voor alle nieuwe mails - efficient en goedkoop
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const client2 = new Anthropic({ apiKey });
+
+    const prompt = `Hieronder staan ${teClassificeren.length} e-mails voor JnA Events (DJ-bedrijf, Tilburg). Classificeer elke mail op categorie EN intent.
+
+CATEGORIE (kies één): lead, klant, leverancier, spam, urgent, overig
+INTENT (kies één): vraag, offerte-verzoek, klacht, informatie, follow-up-nodig, geen-actie
+
+Lever je antwoord terug als JSON-array met exact deze structuur, één object per mail in dezelfde volgorde:
+[{"id": "mail-X", "category": "lead", "intent": "offerte-verzoek", "reden": "korte zin"}]
+
+GEEN markdown, GEEN uitleg eromheen, ALLEEN de JSON.
+
+Mails:
+${teClassificeren.map((m, i) => `[${i + 1}] id=${m.id}\nVan: ${m.fromName || m.from} <${m.from}>\nOnderwerp: ${m.subject}\nSnippet: ${m.snippet || "(leeg)"}\n`).join("\n")}`;
+
+    try {
+      const response = await client2.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 2000,
+        messages: [{ role: "user", content: prompt }],
+      });
+      const text = response.content.map((c) => (c.type === "text" ? c.text : "")).join("").trim();
+      // Vind JSON-array in response
+      const m = text.match(/\[[\s\S]*\]/);
+      if (m) {
+        const parsed = JSON.parse(m[0]);
+        for (const p of parsed) {
+          cached[p.id] = { category: p.category, intent: p.intent, reden: p.reden, when: Date.now() };
+        }
+        await writeData(cacheKey, cached);
+      }
+    } catch (err) {
+      // Cache laten staan, niet fataal
+      console.error("Classify mislukt:", err.message);
+    }
+  }
+
+  // Geef mails terug met hun classificatie
+  return res.status(200).json({
+    mails: mails.map((m) => ({
+      id: m.id,
+      from: m.from,
+      fromName: m.fromName,
+      subject: m.subject,
+      received: m.received,
+      unread: m.unread,
+      classification: cached[m.id] || null,
+    })),
+  });
+}
+
+async function handleDraftReply(req, res) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: "Claude niet geconfigureerd" });
+  const mailId = req.query.id;
+  if (!mailId) return res.status(400).json({ error: "id parameter vereist (bv. mail-123)" });
+  const uid = mailId.replace(/^mail-/, "");
+
+  // Haal de specifieke mail op
+  const mail = await fetchSpecificMail(parseInt(uid));
+  if (!mail) return res.status(404).json({ error: "Mail niet gevonden" });
+
+  // Klantcontext uit Boeksy: heeft deze afzender al iets bij ons lopen?
+  let boeksyContext = "";
+  try {
+    const overview = await readData("boeksy_overview_cache");
+    if (overview && overview.relations) {
+      const klant = overview.relations.find((r) => r.email && r.email.toLowerCase() === mail.from.toLowerCase());
+      if (klant) {
+        boeksyContext += `\n\nKLANT-CONTEXT UIT BOEKSY: ${klant.name} is een bekende relatie (${klant.type || "klant"}).`;
+        const klantFacturen = (overview.invoices || []).filter((i) => i.relation === klant.name);
+        const klantOffertes = (overview.quotes || []).filter((q) => q.relation === klant.name);
+        if (klantFacturen.length) {
+          boeksyContext += ` Eerder gefactureerd: ${klantFacturen.length} factu(u)r(en).`;
+        }
+        if (klantOffertes.length) {
+          const open = klantOffertes.filter((q) => !((q.status || "").toLowerCase().match(/accepted|paid|geaccepteerd|voldaan|rejected/)));
+          if (open.length) boeksyContext += ` ${open.length} open offerte(s).`;
+        }
+      }
+    }
+  } catch { /* klant-context is bonus, niet kritiek */ }
+
+  // JnA tone-of-voice uit snippets
+  let toneSnippet = "";
+  try {
+    const snippets = (await readData("doc_snippets")) || [];
+    const tone = snippets.find((s) => /tone|toon|stijl/i.test(s.label));
+    if (tone) toneSnippet = `\n\nJnA TONE-OF-VOICE (uit eigen instellingen): ${tone.value}`;
+  } catch { /* */ }
+
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  const claude = new Anthropic({ apiKey });
+
+  const prompt = `Schrijf een conceptantwoord op deze e-mail voor JnA Events (DJ-bedrijf in Tilburg, eigenaar Jordi).
+
+STIJL: spreektaal, persoonlijk, warm maar professioneel. Geen "geachte heer/mevrouw". Beginnen met "Hoi [voornaam]" of "Hi [voornaam]" als de naam bekend is. Geen overdreven marketingtaal.${toneSnippet}
+
+LENGTE: kort, 4-6 zinnen. Direct ter zake.
+
+ALS er om een offerte gevraagd wordt: geef geen prijzen, vraag liever om datum, locatie, geschatte aantal gasten zodat er een passende offerte gemaakt kan worden.
+
+INKOMENDE MAIL:
+Van: ${mail.fromName || mail.from} <${mail.from}>
+Onderwerp: ${mail.subject}
+Bericht: ${mail.body || mail.snippet || "(leeg)"}${boeksyContext}
+
+Lever terug:
+- Onderwerp: ...
+- Bericht: ...
+
+GEEN markdown, geen sterretjes. Sluit af met "Groet, Jordi".`;
+
+  try {
+    const response = await claude.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const text = response.content.map((c) => (c.type === "text" ? c.text : "")).join("").trim();
+
+    // Parse onderwerp + bericht
+    const ondMatch = text.match(/Onderwerp:\s*(.+?)(?:\n|$)/i);
+    const berMatch = text.match(/Bericht:\s*([\s\S]+?)(?:Groet,|\nGroet|$)/i);
+    const subject = ondMatch ? ondMatch[1].trim() : `Re: ${mail.subject}`;
+    let body = berMatch ? berMatch[1].trim() : text;
+    // Voeg afsluiting toe als die ontbreekt
+    if (!/groet,?\s*jordi/i.test(body)) body += "\n\nGroet,\nJordi";
+
+    return res.status(200).json({
+      to: mail.from,
+      toName: mail.fromName,
+      subject,
+      body,
+      originalSubject: mail.subject,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Concept-opstelling mislukt: " + err.message });
+  }
+}
+
+
 // Verstuurt mail via dezelfde provider als IMAP (meestal). Verwacht:
 //   - SMTP_HOST en SMTP_PORT in env (vaak respectievelijk imap-host met poort 465 of 587)
 //   - of: gebruikt IMAP_HOST/USER/PASS met een raden van SMTP-host (host vervangen 'imap' door 'smtp')
@@ -258,7 +499,9 @@ export default async function handler(req, res) {
     if (action === "inbox") return await handleInbox(req, res);
     if (action === "settings") return await handleSettings(req, res);
     if (action === "send") return await handleSend(req, res);
-    return res.status(400).json({ error: "Onbekende action. Gebruik ?action=inbox, settings of send." });
+    if (action === "classify") return await handleClassify(req, res);
+    if (action === "draft-reply") return await handleDraftReply(req, res);
+    return res.status(400).json({ error: "Onbekende action. Gebruik ?action=inbox, settings, send, classify of draft-reply." });
   } catch (err) {
     console.error("Mail fout:", err.message);
     return res.status(500).json({ error: "Mail-fout: " + err.message });

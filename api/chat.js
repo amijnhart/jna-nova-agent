@@ -148,7 +148,20 @@ export default async function handler(req, res) {
         if (f.ibReservering !== null && f.ibReservering !== undefined) {
           finBlok += `\n- IB gereserveerd: € ${f.ibReservering.toLocaleString("nl-NL", { maximumFractionDigits: 2 })}`;
         }
-        finBlok += "\n\nBELANGRIJK: deze cijfers komen direct van Boeksy en zijn 1:1 wat Boeksy in zijn app toont. Niet zelf herberekenen of schatten. Voor meer detail (BTW per periode, openstaande facturen) kan de gebruiker het Financieel-paneel openen.";
+        // BOEKHOUDKUNDIGE UITLEG-LAAG.
+        // NOVA moet niet alleen cijfers kunnen noemen, ze moet ook de relaties
+        // ertussen kunnen uitleggen als de gebruiker daarnaar vraagt.
+        finBlok += "\n\nBOEKHOUDKUNDIGE LOGICA achter deze cijfers (gebruik ALS de gebruiker vraagt naar 'waarom', 'verschil', 'hoe wordt dit berekend', of als context bij een proactieve uitleg):";
+        finBlok += "\n- Banksaldo = werkelijk geld op de rekening NU. Dit is wat de bank zegt.";
+        finBlok += "\n- BTW-reservering = de BTW die je later moet afdragen aan de Belastingdienst (verschil tussen ontvangen BTW van klanten en betaalde BTW op kosten). Boeksy houdt dit bij per kwartaal.";
+        finBlok += "\n- IB-reservering = de inkomstenbelasting die je later betaalt over je winst. Boeksy reserveert 37 procent van de gerealiseerde winst (eenvoudige berekening, geen schijven of aftrekposten).";
+        finBlok += "\n- Echt besteedbaar = banksaldo MINUS BTW-reservering MINUS IB-reservering. Dat is wat je vrij kunt uitgeven zonder dat er straks geld tekort is voor de belasting.";
+        finBlok += "\n\nVoorbeeld van een uitleg-antwoord: 'Het verschil tussen je banksaldo van 218 euro en je besteedbaar van 204 euro komt door 14 euro BTW die je moet reserveren voor het kwartaal-einde. Er staat nog 0 IB-reservering omdat je dit jaar nog geen winst hebt gemaakt waarover IB betaald moet worden.'";
+        if (f.btwReservering !== null && f.bankSaldo !== null && f.besteedbaar !== null) {
+          const verschil = f.bankSaldo - f.besteedbaar;
+          finBlok += `\n- CONCREET voor nu: het verschil tussen banksaldo en besteedbaar is € ${verschil.toLocaleString("nl-NL", { maximumFractionDigits: 2 })} - dit zijn de BTW + IB reserveringen samen.`;
+        }
+        finBlok += "\n\nDeze cijfers komen 1:1 van Boeksy. Niet zelf herberekenen of schatten. Voor meer detail (BTW per periode, openstaande facturen, jaar-op-jaar) kan de gebruiker het Financieel-paneel openen.";
         blok += finBlok;
       }
       if (Array.isArray(boeksy.events) && boeksy.events.length) {
