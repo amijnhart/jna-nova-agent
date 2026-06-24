@@ -1224,6 +1224,21 @@ function Nova({ token, onLogout }) {
     } catch (e) { void e; }
   }
 
+  // Verbeterpunt-status wijzigen (open / done / dismissed).
+  // Bij done of dismissed verdwijnt het uit de open-lijst maar blijft het bewaard
+  // in Redis zodat we het later eventueel kunnen terughalen of analyseren.
+  async function updateImprovementStatus(id, status) {
+    try {
+      const res = await fetch(IMPROVE_URL, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ id, status }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d.items)) setImprovements(d.items);
+    } catch (e) { void e; }
+  }
+
   function copyImprovements() {
     const txt =
       "Verbeterpunten voor de Agent van JnA Events (verzameld door NOVA):\n\n" +
@@ -2465,6 +2480,35 @@ function Nova({ token, onLogout }) {
     } catch (e) { console.error("Bestand verwijderen mislukt:", e); }
   }
 
+  // Tekst uitlezen uit PDF/DOCX zodat NOVA de inhoud kent.
+  // Resultaat wordt aan het docFiles item gehecht als 'extract' en automatisch
+  // meegestuurd naar Claude bij volgende chat-calls.
+  async function extractDocFile(id) {
+    setStatus("Document uitlezen...");
+    try {
+      const r = await fetch("/api/documents?type=extract&id=" + encodeURIComponent(id), {
+        headers: { Authorization: "Bearer " + token },
+      });
+      const d = await r.json();
+      if (r.ok && (d.text || d.text === "")) {
+        // Voeg extract toe aan het juiste docFile in state
+        setDocFiles((prev) => prev.map((f) => f.id === id ? { ...f, extract: d.text, extracted: d.extracted } : f));
+        if (d.text) {
+          setMessages((m) => [...m, { role: "assistant", content: `✓ ${d.filename}: ${d.text.length} tekens uitgelezen. Ik kan nu over de inhoud praten.` }]);
+        } else if (d.warning) {
+          setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${d.filename}: ${d.warning}` }]);
+        }
+        setStatus("Klaar");
+      } else {
+        setMessages((m) => [...m, { role: "assistant", content: "Uitlezen mislukt: " + (d.error || "onbekend") }]);
+        setStatus("Fout");
+      }
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: "Verbindingsfout: " + e.message }]);
+      setStatus("Fout");
+    }
+  }
+
   async function sendMessage(forced) {
     const text = (forced ?? input).trim();
     if (!text || busy) return;
@@ -3063,6 +3107,8 @@ function Nova({ token, onLogout }) {
                     <div style={{ fontSize: 13, color: "#E8F1FF", lineHeight: 1.5 }}>{it.text}</div>
                     <div style={{ fontSize: 10, color: "rgba(180,210,255,.4)", marginTop: 3 }}>{new Date(it.date).toLocaleString("nl-NL")}</div>
                   </div>
+                  <button onClick={() => updateImprovementStatus(it.id, "done")} title="Klaar / opgepakt" style={{ background: "rgba(29,158,117,.15)", border: "1px solid rgba(29,158,117,.3)", color: "#5DCAA5", cursor: "pointer", fontSize: 12, padding: "3px 7px", borderRadius: 5 }}>✓</button>
+                  <button onClick={() => updateImprovementStatus(it.id, "dismissed")} title="Niet relevant" style={{ background: "transparent", border: "1px solid rgba(255,143,163,.3)", color: "rgba(255,143,163,.7)", cursor: "pointer", fontSize: 12, padding: "3px 7px", borderRadius: 5 }}>−</button>
                   <button onClick={() => deleteImprovement(it.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(180,210,255,.4)", cursor: "pointer", fontSize: 15 }}>×</button>
                 </div>
               ))}
@@ -4442,17 +4488,23 @@ function Nova({ token, onLogout }) {
                   </div>
                 )}
 
-                {docFiles.map((f) => (
-                  <div key={f.id} style={{ padding: "10px 12px", marginBottom: 6, background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.18)", borderRadius: 10, display: "flex", gap: 10, alignItems: "center" }}>
-                    <span style={{ fontSize: 20 }}>{f.contentType?.startsWith("image") ? "🖼" : f.contentType?.includes("pdf") ? "📄" : "📎"}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: "#E8F1FF", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.label}</div>
-                      <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 2 }}>{f.filename} · {Math.round(f.size / 1024)} KB · {f.category}</div>
+                {docFiles.map((f) => {
+                  const isExtractable = (f.contentType?.includes("pdf") || f.contentType?.includes("wordprocessingml") || f.contentType?.startsWith("text/") || f.filename?.toLowerCase().match(/\.(pdf|docx|txt|md)$/));
+                  return (
+                    <div key={f.id} style={{ padding: "10px 12px", marginBottom: 6, background: "rgba(56,230,255,.05)", border: "1px solid rgba(56,230,255,.18)", borderRadius: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 20 }}>{f.contentType?.startsWith("image") ? "🖼" : f.contentType?.includes("pdf") ? "📄" : "📎"}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, color: "#E8F1FF", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.label}{f.extract && <span style={{ marginLeft: 8, fontSize: 9, color: "#5DCAA5" }}>✓ gelezen</span>}</div>
+                        <div style={{ fontSize: 10, color: "rgba(180,210,255,.5)", marginTop: 2 }}>{f.filename} · {Math.round(f.size / 1024)} KB · {f.category}</div>
+                      </div>
+                      {isExtractable && !f.extract && (
+                        <button onClick={() => extractDocFile(f.id)} title="Tekst uitlezen voor NOVA" style={{ background: "rgba(127,119,221,.15)", border: "1px solid rgba(127,119,221,.4)", color: "#A399E8", padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer", fontWeight: 600 }}>📖 uitlezen</button>
+                      )}
+                      <a href={f.downloadUrl || f.url} target="_blank" rel="noopener noreferrer" title="Openen" style={{ color: CYAN, textDecoration: "none", padding: "4px 8px", border: "1px solid rgba(56,230,255,.3)", borderRadius: 6, fontSize: 11 }}>open</a>
+                      <button onClick={() => deleteDocFile(f.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(255,143,163,.7)", cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1 }}>×</button>
                     </div>
-                    <a href={f.downloadUrl || f.url} target="_blank" rel="noopener noreferrer" title="Openen" style={{ color: CYAN, textDecoration: "none", padding: "4px 8px", border: "1px solid rgba(56,230,255,.3)", borderRadius: 6, fontSize: 11 }}>open</a>
-                    <button onClick={() => deleteDocFile(f.id)} title="Verwijderen" style={{ background: "transparent", border: "none", color: "rgba(255,143,163,.7)", cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1 }}>×</button>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {blobConfigured && <FileUploadForm onUpload={uploadDocFile} />}
               </div>
