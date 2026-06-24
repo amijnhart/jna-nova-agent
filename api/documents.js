@@ -196,10 +196,102 @@ async function handleFiles(req, res) {
     }
     const filtered = items.filter((i) => i.id !== id);
     await writeData(FILES_INDEX_KEY, filtered);
+    // Ook gecachte extractie verwijderen
+    await writeData("doc_text_" + id, null);
     return res.status(200).json({ ok: true, items: filtered });
   }
 
   return res.status(405).json({ error: "Methode niet toegestaan" });
+}
+
+// --- EXTRACT: tekst uit PDF/DOCX uitlezen zodat NOVA de inhoud kan gebruiken ---
+//
+// Strategie: bij eerste aanvraag downloaden we het bestand uit Blob, parsen het
+// met pdf-parse of mammoth (afhankelijk van extension/contenttype), en cachen
+// de gestripte tekst in Redis. Volgende aanvragen halen direct uit cache.
+async function handleExtract(req, res) {
+  if (req.method !== "GET") return res.status(405).json({ error: "GET vereist" });
+  const id = req.query.id;
+  if (!id) return res.status(400).json({ error: "id verplicht" });
+
+  // Cache eerst raadplegen
+  const cacheKey = "doc_text_" + id;
+  const cached = await readData(cacheKey);
+  if (cached && cached.text) {
+    return res.status(200).json({
+      id,
+      filename: cached.filename,
+      text: cached.text,
+      extracted: cached.extracted,
+      fromCache: true,
+    });
+  }
+
+  // Bestand opzoeken in index
+  const items = await readData(FILES_INDEX_KEY, []);
+  const target = items.find((i) => i.id === id);
+  if (!target) return res.status(404).json({ error: "Bestand niet gevonden in index" });
+  if (!target.url) return res.status(400).json({ error: "Geen download-URL beschikbaar" });
+
+  // Download het bestand uit Blob
+  let buffer;
+  try {
+    const r = await fetch(target.downloadUrl || target.url);
+    if (!r.ok) throw new Error("Blob download faalde: " + r.status);
+    buffer = Buffer.from(await r.arrayBuffer());
+  } catch (err) {
+    return res.status(502).json({ error: "Download mislukt: " + err.message });
+  }
+
+  // Bepaal type op basis van filename of content-type
+  const filename = target.filename || "";
+  const lower = filename.toLowerCase();
+  const isPDF = lower.endsWith(".pdf") || (target.contentType || "").includes("pdf");
+  const isDOCX = lower.endsWith(".docx") || (target.contentType || "").includes("wordprocessingml");
+  const isTXT = lower.endsWith(".txt") || lower.endsWith(".md") || (target.contentType || "").startsWith("text/");
+
+  let text = "";
+  try {
+    if (isPDF) {
+      // pdf-parse leest tekst uit PDF
+      const pdfParse = (await import("pdf-parse")).default;
+      const result = await pdfParse(buffer);
+      text = (result.text || "").trim();
+    } else if (isDOCX) {
+      // mammoth converteert DOCX naar plain text
+      const mammoth = await import("mammoth");
+      const result = await mammoth.extractRawText({ buffer });
+      text = (result.value || "").trim();
+    } else if (isTXT) {
+      text = buffer.toString("utf-8").trim();
+    } else {
+      return res.status(415).json({ error: "Bestandstype niet ondersteund voor tekstextractie. Wel: PDF, DOCX, TXT, MD." });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: "Tekstextractie mislukt: " + err.message });
+  }
+
+  if (!text) {
+    return res.status(200).json({
+      id,
+      filename,
+      text: "",
+      warning: "Geen tekst gevonden. Mogelijk een scan-PDF of beeldbestand zonder OCR.",
+    });
+  }
+
+  // Cache het resultaat. Limiteer tot 100KB tekst om Redis niet vol te stoppen.
+  const trimmed = text.length > 100000 ? text.slice(0, 100000) + "\n[...afgekapt op 100KB]" : text;
+  const extracted = new Date().toISOString();
+  await writeData(cacheKey, { filename, text: trimmed, extracted });
+
+  return res.status(200).json({
+    id,
+    filename,
+    text: trimmed,
+    extracted,
+    fromCache: false,
+  });
 }
 
 // --- ROUTER ---
@@ -213,6 +305,7 @@ export default async function handler(req, res) {
     const type = req.query.type || "";
     if (type === "snippets") return await handleSnippets(req, res);
     if (type === "files") return await handleFiles(req, res);
+    if (type === "extract") return await handleExtract(req, res);
     if (type === "blob-status") {
       const diag = blobDiagnose();
       return res.status(200).json({
@@ -228,7 +321,7 @@ export default async function handler(req, res) {
               : "Geen Vercel Blob env-vars gevonden. Stappen: Vercel project → Storage → Create → Blob → bij koppelen 'Production' aanvinken → daarna Deployments → Redeploy."),
       });
     }
-    return res.status(400).json({ error: "Onbekend type. Gebruik snippets, files of blob-status." });
+    return res.status(400).json({ error: "Onbekend type. Gebruik snippets, files, extract of blob-status." });
   } catch (err) {
     console.error("Documents-fout:", err.message);
     return res.status(500).json({ error: err.message });

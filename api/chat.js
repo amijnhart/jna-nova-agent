@@ -195,12 +195,21 @@ export default async function handler(req, res) {
     }
 
     // Bedrijfsdocumenten: bestanden (PDF rider, handleiding, logo, handtekening)
+    // De frontend stuurt files-array mee. Per bestand optioneel een 'extract' veld
+    // met uitgelezen tekst (PDF/DOCX content). Dat wordt mee de prompt in.
     if (Array.isArray(files) && files.length) {
       let fileBlok = "\n\nBEDRIJFSDOCUMENTEN - deze bestanden zijn beschikbaar om naar klanten te sturen:";
       for (const f of files) {
         fileBlok += `\n- ${f.label} (${f.category}): ${f.filename}`;
+        // Als er extract-tekst is, voeg die als referentie toe.
+        // Gelimiteerd tot ~3000 tekens per bestand om token-budget te bewaken.
+        if (f.extract && typeof f.extract === "string" && f.extract.length > 0) {
+          const trimmed = f.extract.length > 3000 ? f.extract.slice(0, 3000) + "\n[...]" : f.extract;
+          fileBlok += `\n  INHOUD van ${f.filename}:\n  """\n${trimmed}\n  """`;
+        }
       }
       fileBlok += "\n\nWanneer een klant om een rider, handleiding, logo of ander document vraagt: noem het op een aparte regel als: DOCUMENT: bestandsnaam | optionele toelichting. De gebruiker krijgt dan een knop om het document direct naar de klant te sturen.";
+      fileBlok += "\n\nWanneer een vraag gaat over de INHOUD van een document (bv 'wat staat er in de rider', 'welke apparatuur hebben we', 'wat zijn de opbouw-eisen'): gebruik de uitgelezen INHOUD hierboven om gericht te antwoorden. Citeer kort en concreet. Als de inhoud er niet bij staat, zeg dat de gebruiker moet zeggen 'lees rider uit' of 'extract handleiding'.";
       system += fileBlok;
     }
     const response = await anthropic.messages.create({

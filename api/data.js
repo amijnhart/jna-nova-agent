@@ -81,33 +81,61 @@ async function handleCalendar(req, res) {
 }
 
 // --- IMPROVEMENTS ---
+//
+// Verbeterpunten worden persistent opgeslagen in Redis. Sessies overleven dit al.
+// Status-veld toegevoegd om bij te houden welke al opgepakt/afgewezen zijn:
+//   - "open" (standaard, nog niet behandeld)
+//   - "done" (opgepakt en klaar)
+//   - "dismissed" (niet relevant, niet meer tonen)
 async function handleImprovements(req, res) {
   if (req.method === "GET") {
-    return res.status(200).json({ items: await readData(KEYS.improvements, []) });
+    const all = await readData(KEYS.improvements, []);
+    // Standaard alleen open items teruggeven, tenzij ?all=1
+    const includeAll = req.query.all === "1";
+    const items = includeAll ? all : all.filter((i) => (i.status || "open") === "open");
+    return res.status(200).json({ items, totalOpen: all.filter((i) => (i.status || "open") === "open").length, totalAll: all.length });
   }
   if (req.method === "POST") {
     const { text, source } = req.body || {};
     if (typeof text !== "string" || !text.trim()) return res.status(400).json({ error: "Lege verbeterpunt" });
     const list = await readData(KEYS.improvements, []);
-    if (list.some((i) => i.text.trim().toLowerCase() === text.trim().toLowerCase())) {
-      return res.status(200).json({ items: list, duplicate: true });
+    // Dedup: zelfde tekst niet opnieuw - ook als hij eerder afgewezen was, opnieuw open zetten
+    const existing = list.find((i) => i.text.trim().toLowerCase() === text.trim().toLowerCase());
+    if (existing) {
+      if (existing.status === "dismissed") existing.status = "open"; // heropen want het komt terug
+      await writeData(KEYS.improvements, list);
+      return res.status(200).json({ items: list.filter((i) => (i.status || "open") === "open"), duplicate: true });
     }
     const item = {
       id: makeId("imp"),
       text: text.trim(),
       source: source || "nova",
       date: new Date().toISOString(),
+      status: "open",
     };
     const next = [item, ...list].slice(0, 200);
     await writeData(KEYS.improvements, next);
-    return res.status(200).json({ items: next });
+    return res.status(200).json({ items: next.filter((i) => (i.status || "open") === "open") });
+  }
+  if (req.method === "PATCH") {
+    // Status veranderen: open / done / dismissed
+    const { id, status } = req.body || {};
+    if (!id || !status) return res.status(400).json({ error: "id en status verplicht" });
+    if (!["open", "done", "dismissed"].includes(status)) return res.status(400).json({ error: "Ongeldige status" });
+    const list = await readData(KEYS.improvements, []);
+    const item = list.find((i) => i.id === id);
+    if (!item) return res.status(404).json({ error: "Verbeterpunt niet gevonden" });
+    item.status = status;
+    item.updated = new Date().toISOString();
+    await writeData(KEYS.improvements, list);
+    return res.status(200).json({ items: list.filter((i) => (i.status || "open") === "open") });
   }
   if (req.method === "DELETE") {
     const { id, all } = req.body || {};
     let list = await readData(KEYS.improvements, []);
     list = all ? [] : list.filter((i) => i.id !== id);
     await writeData(KEYS.improvements, list);
-    return res.status(200).json({ items: list });
+    return res.status(200).json({ items: list.filter((i) => (i.status || "open") === "open") });
   }
   return res.status(405).json({ error: "Methode niet toegestaan" });
 }
