@@ -431,6 +431,7 @@ async function handleOverview(req, res) {
   if (quotes.status === "fulfilled") {
     const followUps = [];
     const allStatussen = []; // diagnose: welke statussen zien we echt langskomen
+    const verworpen = []; // diagnose: welke offertes werden gefilterd en waarom
     const fourteenDaysAgo = nowMs - 14 * 24 * 60 * 60 * 1000;
     // Statussen die wél in follow-up mogen verschijnen (positieve filter)
     const toegestaan = new Set([
@@ -450,22 +451,44 @@ async function handleOverview(req, res) {
     for (const q of (quotes.value.data || [])) {
       const status = (q.status || "").toLowerCase().trim();
       if (status) allStatussen.push(status);
+      const nummer = q.number || q.quote_number || "?";
 
-      // Eerst: zit hij in de uitsluit-lijst? Dan stoppen.
-      if (uitsluiten.has(status)) continue;
+      // STRIKT: lege status -> NIET doorlaten. Bij twijfel uitsluiten.
+      if (!status) {
+        verworpen.push({ nummer, reden: "geen status", status: q.status });
+        continue;
+      }
 
-      // Tweede: zit hij NIET in de toegestaan-lijst? Dan ook stoppen.
-      // Dit beschermt tegen onbekende statussen waar we niet zeker van zijn.
-      if (status && !toegestaan.has(status)) continue;
+      // Uitsluit-lijst
+      if (uitsluiten.has(status)) {
+        verworpen.push({ nummer, reden: "uitgesloten status", status });
+        continue;
+      }
+
+      // Niet in toegestaan-lijst? Ook uitsluiten (whitelist-approach)
+      if (!toegestaan.has(status)) {
+        verworpen.push({ nummer, reden: "onbekende status", status });
+        continue;
+      }
 
       const date = q.quote_date || q.date;
-      if (!date) continue;
+      if (!date) {
+        verworpen.push({ nummer, reden: "geen datum", status });
+        continue;
+      }
       const ms = new Date(date).getTime();
-      if (isNaN(ms) || ms > fourteenDaysAgo) continue;
+      if (isNaN(ms)) {
+        verworpen.push({ nummer, reden: "ongeldige datum", status });
+        continue;
+      }
+      if (ms > fourteenDaysAgo) {
+        // Te jong - geen follow-up nodig, niet als verworpen aanmerken
+        continue;
+      }
 
       followUps.push({
         id: q.id,
-        number: q.number || q.quote_number || null,
+        number: nummer,
         date,
         klant: q.relation?.name || q.relation_name || "",
         subject: q.subject || "",
@@ -476,12 +499,13 @@ async function handleOverview(req, res) {
     }
     followUps.sort((a, b) => b.ageDays - a.ageDays);
     result.followUps = followUps;
-    // Diagnose: welke statussen kwamen we tegen?
+    // Diagnose: welke statussen kwamen we tegen, en wat werd gefilterd waarom?
     // Hulpvol om te zien of er statussen zijn die we nog niet kennen.
     result.followUpsDiagnose = {
       uniekStatussen: [...new Set(allStatussen)].sort(),
       totaalOffertes: (quotes.value.data || []).length,
       naFilter: followUps.length,
+      verworpen: verworpen.slice(0, 20), // max 20 voor leesbaarheid
     };
   }
 
