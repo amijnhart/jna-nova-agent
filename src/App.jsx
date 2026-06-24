@@ -913,8 +913,10 @@ function Nova({ token, onLogout }) {
       // Een goede assistent zegt niet "je hebt X, Y, Z" maar "ik stel voor dat je
       // vandaag dit oppakt: ...". We bouwen één tot drie concrete suggesties.
       const groetMetNaam = `${groet}${naam ? ", " + naam : ""}`;
-      const followUps = (dB?.followUps || []).filter((f) => f.daysOpen >= 14);
-      const oldestFollowUp = followUps.sort((a, b) => b.daysOpen - a.daysOpen)[0];
+      // Gebruik de backend-followUps direct (die heeft strikte status-filter en ageDays veld).
+      // Niet meer onze eigen deriveFollowUpQuotes hier - die had een lichter filter.
+      const followUps = (dB?.followUps || []);
+      const oldestFollowUp = followUps[0]; // backend sorteert al op leeftijd (oudste eerst)
 
       // Bouw de suggesties op basis van wat er werkelijk aandacht vraagt
       const suggesties = [];
@@ -924,7 +926,12 @@ function Nova({ token, onLogout }) {
         suggesties.push(`er ${mailCount === 1 ? "is" : "zijn"} ${mailCount} nieuwe mail${mailCount === 1 ? "" : "s"} binnen`);
       }
       if (oldestFollowUp) {
-        suggesties.push(`offerte ${oldestFollowUp.number || ""} staat al ${oldestFollowUp.daysOpen} dagen open zonder reactie`);
+        // Toon klantnaam en onderwerp ipv offertenummer - voor mensen leesbaarder.
+        // "de offerte voor Acme BV (Bruiloft 1 mei) staat al 25 dagen open"
+        const dagen = oldestFollowUp.ageDays || 0;
+        const klant = oldestFollowUp.klant || "onbekende klant";
+        const subj = oldestFollowUp.subject ? ` (${oldestFollowUp.subject})` : "";
+        suggesties.push(`de offerte voor ${klant}${subj} staat al ${dagen} dagen open zonder reactie`);
       } else if (followUps.length > 0) {
         suggesties.push(`er zijn ${followUps.length} offertes die follow-up nodig hebben`);
       }
@@ -2330,7 +2337,7 @@ function Nova({ token, onLogout }) {
       financials: b.financials || null, // bankstand + BTW per kwartaal/jaar
       boeksyProducts: b.boeksyProducts || null, // standaard productencatalogus voor offerteopzet
       events: (b.events || []).slice(0, 10).map((e) => ({ date: e.date, days: e.days, subject: e.subject, klant: e.klant, source: e.boeksySource })),
-      followUps: (b.followUps || []).slice(0, 10).map((f) => ({ number: f.number, klant: f.klant, subject: f.subject, daysOpen: f.daysOpen, total: f.total })),
+      followUps: (b.followUps || []).slice(0, 10).map((f) => ({ number: f.number, klant: f.klant, subject: f.subject, daysOpen: f.ageDays, total: f.total })),
     } : null;
     const res = await fetch(CHAT_URL, {
       method: "POST",
@@ -4069,7 +4076,7 @@ function Nova({ token, onLogout }) {
                         <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 2 }}>
                           <span style={{ color: AMBER, fontWeight: 600 }}>{f.number || "concept"}</span>
                           <span style={{ color: "#E8F1FF" }}>{f.klant || ""}</span>
-                          <span style={{ marginLeft: "auto", fontSize: 10, color: AMBER }}>{f.daysOpen} dagen open</span>
+                          <span style={{ marginLeft: "auto", fontSize: 10, color: AMBER }}>{f.ageDays} dagen open</span>
                         </div>
                         {f.subject && <div style={{ color: "rgba(220,238,255,.7)", fontSize: 11 }}>{f.subject}{f.total ? ` · € ${f.total}` : ""}</div>}
                       </div>
