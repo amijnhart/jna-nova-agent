@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const CYAN = "#38E6FF";
 const PURPLE = "#7F77DD";
@@ -490,8 +491,18 @@ export default function App() {
     try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) { void e; }
   }
 
-  if (!token) return <LoginScreen onLogin={handleLogin} />;
-  return <Nova token={token} onLogout={logout} />;
+  if (!token) return (
+    <>
+      <LoginScreen onLogin={handleLogin} />
+      <SpeedInsights />
+    </>
+  );
+  return (
+    <>
+      <Nova token={token} onLogout={logout} />
+      <SpeedInsights />
+    </>
+  );
 }
 
 // Kleine helper-component voor het toevoegen van een tekst-snippet aan bedrijfsdocumenten.
