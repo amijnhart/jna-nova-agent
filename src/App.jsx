@@ -913,30 +913,53 @@ function Nova({ token, onLogout }) {
       // Een goede assistent zegt niet "je hebt X, Y, Z" maar "ik stel voor dat je
       // vandaag dit oppakt: ...". We bouwen één tot drie concrete suggesties.
       const groetMetNaam = `${groet}${naam ? ", " + naam : ""}`;
+
+      // DAILY BRAIN: probeer eerst de ochtend-briefing op te halen die de cron
+      // om 7:00 heeft gemaakt. Als die er is, gebruik die items als basis.
+      // Voordelen: items zijn vooraf gerangschikt op urgentie, en cross-session
+      // consistent want het is dezelfde briefing voor de hele dag.
+      let dailyBriefItems = null;
+      try {
+        const dbR = await fetch("/api/onboarding?action=daily-brain", {
+          headers: { Authorization: "Bearer " + token },
+        });
+        const dbData = await dbR.json();
+        if (dbData?.brief?.items?.length > 0) {
+          dailyBriefItems = dbData.brief.items;
+        }
+      } catch (e) { void e; }
+
       // Gebruik de backend-followUps direct (die heeft strikte status-filter en ageDays veld).
-      // Niet meer onze eigen deriveFollowUpQuotes hier - die had een lichter filter.
       const followUps = (dB?.followUps || []);
       const oldestFollowUp = followUps[0]; // backend sorteert al op leeftijd (oudste eerst)
 
-      // Bouw de suggesties op basis van wat er werkelijk aandacht vraagt
+      // Bouw de suggesties op basis van wat er werkelijk aandacht vraagt.
+      // Voorkeur: Daily Brain items (geprioriteerd, vooraf samengesteld door cron).
+      // Fallback: lokaal genereren op basis van Boeksy + mail.
       const suggesties = [];
-      if (urgent > 0) {
-        suggesties.push(`er ${urgent === 1 ? "is" : "zijn"} ${urgent} mail${urgent === 1 ? "" : "s"} die je aandacht vraag${urgent === 1 ? "t" : "en"}`);
-      } else if (mailCount > 0) {
-        suggesties.push(`er ${mailCount === 1 ? "is" : "zijn"} ${mailCount} nieuwe mail${mailCount === 1 ? "" : "s"} binnen`);
-      }
-      if (oldestFollowUp) {
-        // Toon klantnaam en onderwerp ipv offertenummer - voor mensen leesbaarder.
-        // "de offerte voor Acme BV (Bruiloft 1 mei) staat al 25 dagen open"
-        const dagen = oldestFollowUp.ageDays || 0;
-        const klant = oldestFollowUp.klant || "onbekende klant";
-        const subj = oldestFollowUp.subject ? ` (${oldestFollowUp.subject})` : "";
-        suggesties.push(`de offerte voor ${klant}${subj} staat al ${dagen} dagen open zonder reactie`);
-      } else if (followUps.length > 0) {
-        suggesties.push(`er zijn ${followUps.length} offertes die follow-up nodig hebben`);
-      }
-      if (waNieuw > 0) {
-        suggesties.push(`${waNieuw} WhatsApp-bericht${waNieuw === 1 ? "" : "en"} ${waNieuw === 1 ? "ligt" : "liggen"} te wachten`);
+      if (dailyBriefItems && dailyBriefItems.length > 0) {
+        // Top-3 items uit ochtend-briefing
+        for (const item of dailyBriefItems.slice(0, 3)) {
+          suggesties.push(item.tekst.replace(/\.$/, "")); // punt eraf, wij zetten 'm zelf
+        }
+      } else {
+        // Fallback: build vanuit live data
+        if (urgent > 0) {
+          suggesties.push(`er ${urgent === 1 ? "is" : "zijn"} ${urgent} mail${urgent === 1 ? "" : "s"} die je aandacht vraag${urgent === 1 ? "t" : "en"}`);
+        } else if (mailCount > 0) {
+          suggesties.push(`er ${mailCount === 1 ? "is" : "zijn"} ${mailCount} nieuwe mail${mailCount === 1 ? "" : "s"} binnen`);
+        }
+        if (oldestFollowUp) {
+          const dagen = oldestFollowUp.ageDays || 0;
+          const klant = oldestFollowUp.klant || "onbekende klant";
+          const subj = oldestFollowUp.subject ? ` (${oldestFollowUp.subject})` : "";
+          suggesties.push(`de offerte voor ${klant}${subj} staat al ${dagen} dagen open zonder reactie`);
+        } else if (followUps.length > 0) {
+          suggesties.push(`er zijn ${followUps.length} offertes die follow-up nodig hebben`);
+        }
+        if (waNieuw > 0) {
+          suggesties.push(`${waNieuw} WhatsApp-bericht${waNieuw === 1 ? "" : "en"} ${waNieuw === 1 ? "ligt" : "liggen"} te wachten`);
+        }
       }
 
       let tekst;
