@@ -1,4 +1,5 @@
 import { verifyToken } from "./_auth.js";
+import { writeData } from "./_config.js";
 
 // Boeksy boekhoudkoppeling.
 //
@@ -486,6 +487,21 @@ async function handleOverview(req, res) {
         continue;
       }
 
+      // DOOD-CONCEPT FILTER: concepten ouder dan 90 dagen zijn praktisch dood.
+      // Boeksy laat status onveranderd 'concept' als de gebruiker hem nooit
+      // verstuurd of afgesloten heeft. Een dergelijke offerte ga je in de
+      // praktijk niet alsnog opvolgen, dus uitsluiten van begroeting/follow-up.
+      const ageDays = Math.floor((nowMs - ms) / (24 * 60 * 60 * 1000));
+      if (status === "concept" && ageDays > 90) {
+        verworpen.push({ nummer, reden: `concept > 90 dagen (${ageDays}d) - praktisch dood`, status });
+        continue;
+      }
+      // Hardere grens voor alles: > 365 dagen = vrijwel zeker geen actie meer waard
+      if (ageDays > 365) {
+        verworpen.push({ nummer, reden: `> 365 dagen oud (${ageDays}d)`, status });
+        continue;
+      }
+
       followUps.push({
         id: q.id,
         number: nummer,
@@ -494,7 +510,7 @@ async function handleOverview(req, res) {
         subject: q.subject || "",
         total: q.total || q.total_amount || null,
         status: q.status || "open",
-        ageDays: Math.floor((nowMs - ms) / (24 * 60 * 60 * 1000)),
+        ageDays,
       });
     }
     followUps.sort((a, b) => b.ageDays - a.ageDays);
@@ -541,6 +557,13 @@ async function handleOverview(req, res) {
   } catch (err) {
     result.financialsError = err.message;
   }
+
+  // Cache het hele overview in Redis zodat Daily Brain (cron-job 's ochtends)
+  // dezelfde data kan gebruiken zonder zelf opnieuw alle Boeksy-calls te doen.
+  // Geldt zolang het overview niet ouder is dan een paar uur.
+  try {
+    await writeData("boeksy_overview_cache", { ...result, cached: new Date().toISOString() });
+  } catch { /* niet fataal */ }
 
   return res.status(200).json(result);
 }

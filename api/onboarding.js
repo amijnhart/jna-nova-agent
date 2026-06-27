@@ -178,16 +178,168 @@ async function handleStatus(req, res) {
   return res.status(405).json({ error: "Methode niet toegestaan" });
 }
 
+// --- DAILY BRAIN ---
+// Verzamelt 's ochtends data en bouwt een briefing voor de dag.
+// Wordt getriggerd door:
+//   - Vercel Cron (zonder auth - we detecteren via x-vercel-cron header)
+//   - Frontend bij login (met auth - om laatste briefing te tonen)
+//
+// Briefing wordt in Redis opgeslagen onder daily_brief_YYYY-MM-DD.
+async function handleDailyBrain(req, res) {
+  const isCron = !!req.headers["x-vercel-cron"];
+
+  // GET zonder cron-header: alleen tonen wat er al staat (frontend bij login)
+  // GET met cron-header: nieuwe briefing genereren (cron triggert dit)
+  // POST: handmatig forceren van nieuwe briefing
+  const moetGenereren = req.method === "POST" || (req.method === "GET" && isCron);
+
+  if (req.method === "GET" && !isCron) {
+    const today = new Date().toISOString().slice(0, 10);
+    const brief = await readData("daily_brief_" + today, null);
+    return res.status(200).json({ date: today, brief });
+  }
+
+  if (moetGenereren) {
+    const brief = {
+      generated: new Date().toISOString(),
+      items: [],
+    };
+
+    // 1. Open offertes (followUps uit Boeksy-cache) - oudste 3
+    try {
+      const overview = await readData("boeksy_overview_cache", null);
+      if (overview && Array.isArray(overview.followUps)) {
+        const top3 = overview.followUps.slice(0, 3);
+        for (const f of top3) {
+          brief.items.push({
+            type: "offerte",
+            urgency: f.ageDays > 30 ? "hoog" : "midden",
+            tekst: `De offerte voor ${f.klant || "onbekende klant"}${f.subject ? " (" + f.subject + ")" : ""} staat al ${f.ageDays} dagen open.`,
+            action: "follow-up mail concept opstellen",
+            ref: f.number,
+          });
+        }
+      }
+    } catch { /* niet fataal */ }
+
+    // 2. Achterstallige facturen (uit financials.deadlines)
+    try {
+      const overview = await readData("boeksy_overview_cache", null);
+      if (overview && overview.financials?.deadlines?.achterstalligeFacturen > 0) {
+        brief.items.push({
+          type: "factuur",
+          urgency: "hoog",
+          tekst: `${overview.financials.deadlines.achterstalligeFacturen} factu(u)r(en) achterstallig.`,
+          action: "betaalherinnering sturen",
+        });
+      }
+    } catch { /* */ }
+
+    // 3. BTW-deadline naderend
+    try {
+      const overview = await readData("boeksy_overview_cache", null);
+      const dagen = overview?.financials?.deadlines?.btwDagenRest;
+      if (typeof dagen === "number" && dagen <= 14 && dagen > 0) {
+        brief.items.push({
+          type: "btw",
+          urgency: dagen <= 7 ? "hoog" : "midden",
+          tekst: `BTW-aangifte ${overview.financials.deadlines.btwPeriodLabel || ""} loopt af over ${dagen} dagen.`,
+          action: "aangifte voorbereiden",
+        });
+      }
+    } catch { /* */ }
+
+    // 4. Events deze week (uit Boeksy events of zelf-geplande content)
+    try {
+      const overview = await readData("boeksy_overview_cache", null);
+      if (overview && Array.isArray(overview.events)) {
+        const nu = Date.now();
+        const week = nu + 7 * 24 * 60 * 60 * 1000;
+        const dezeWeek = overview.events.filter((e) => {
+          const ms = new Date(e.date).getTime();
+          return ms >= nu && ms <= week;
+        });
+        if (dezeWeek.length > 0) {
+          brief.items.push({
+            type: "events",
+            urgency: "midden",
+            tekst: `${dezeWeek.length} event${dezeWeek.length === 1 ? "" : "s"} deze week: ${dezeWeek.map((e) => e.klant + (e.subject ? " (" + e.subject + ")" : "")).join(", ")}.`,
+            action: "content-plan controleren",
+          });
+        }
+      }
+    } catch { /* */ }
+
+    // 5. Urgent ongelezen mails (uit mail-classifications-cache)
+    try {
+      const cls = await readData("mail_classifications", {});
+      const urgentCount = Object.values(cls).filter((c) => c.category === "urgent" || c.intent === "klacht").length;
+      if (urgentCount > 0) {
+        brief.items.push({
+          type: "mail",
+          urgency: "hoog",
+          tekst: `${urgentCount} mail${urgentCount === 1 ? "" : "s"} geclassificeerd als urgent of klacht.`,
+          action: "mail-inbox openen voor reactie",
+        });
+      }
+    } catch { /* */ }
+
+    // 6. Open verbeterpunten - alleen aantal voor situational awareness
+    try {
+      const imps = await readData(KEYS.improvements, []);
+      const open = imps.filter((i) => (i.status || "open") === "open");
+      if (open.length >= 5) {
+        brief.items.push({
+          type: "verbeteringen",
+          urgency: "laag",
+          tekst: `${open.length} verbeterpunten verzameld, tijd om er een paar door te lopen.`,
+          action: "verbeterpunten openen",
+        });
+      }
+    } catch { /* */ }
+
+    // Sorteer op urgency: hoog eerst
+    const urgencyOrder = { hoog: 0, midden: 1, laag: 2 };
+    brief.items.sort((a, b) => (urgencyOrder[a.urgency] || 3) - (urgencyOrder[b.urgency] || 3));
+
+    // Opslaan
+    const today = new Date().toISOString().slice(0, 10);
+    await writeData("daily_brief_" + today, brief);
+    // Houd ook een korte historie bij voor week-overzicht
+    const historyKey = "daily_brief_history";
+    const history = await readData(historyKey, []);
+    const today_short = { date: today, itemCount: brief.items.length, urgent: brief.items.filter((i) => i.urgency === "hoog").length };
+    const filtered = history.filter((h) => h.date !== today);
+    filtered.unshift(today_short);
+    await writeData(historyKey, filtered.slice(0, 30));
+
+    return res.status(200).json({ ok: true, date: today, brief });
+  }
+
+  return res.status(405).json({ error: "Methode niet toegestaan" });
+}
+
 export default async function handler(req, res) {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+
+  // Cron-triggers van Vercel sturen geen Bearer-token maar wel deze header.
+  // Voor security checken we de aanwezigheid van de header EN het pad.
+  const isCron = !!req.headers["x-vercel-cron"];
+
+  // Daily-brain mag worden getriggerd door cron OF door geauthenticeerde gebruiker
+  if (req.query.action === "daily-brain") {
+    if (!isCron && !verifyToken(token)) return res.status(401).json({ error: "Niet ingelogd." });
+    return await handleDailyBrain(req, res);
+  }
+
   if (!verifyToken(token)) return res.status(401).json({ error: "Niet ingelogd." });
 
   try {
     const action = req.query.action || "status";
     if (action === "status") return await handleStatus(req, res);
     if (action === "backup") return await handleBackup(req, res);
-    return res.status(400).json({ error: "Onbekende action. Gebruik ?action=status of ?action=backup." });
+    return res.status(400).json({ error: "Onbekende action. Gebruik ?action=status, backup of daily-brain." });
   } catch (err) {
     console.error("Onboarding fout:", err.message);
     return res.status(500).json({ error: "Onboarding-fout: " + err.message });
