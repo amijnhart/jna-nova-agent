@@ -766,7 +766,143 @@ async function handleCreateInvoice(req, res) {
   return res.status(200).json({ ok: true, invoice: result.data || result });
 }
 
-// --- ROUTER ---
+// --- FINANCIAL AGENT ---
+//
+// Gespecialiseerde agent voor diepere financiele vragen die de standaard
+// chat-context niet aankan. Wordt aangeroepen wanneer de gebruiker bv. vraagt:
+//   - "wat is mijn omzet vorig jaar versus dit jaar?"
+//   - "welke klant heeft het hoogste gemiddelde factuurbedrag?"
+//   - "hoe staan we ervoor qua winst dit kwartaal?"
+//
+// Verzamelt diepere data uit Boeksy (jaar-op-jaar, alle facturen, klant-stats)
+// en stuurt naar Claude met een financial-analyst persona.
+async function handleFinancialQuery(req, res) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: "Claude niet geconfigureerd" });
+  if (!getApiKey()) return res.status(503).json({ error: "Boeksy niet geconfigureerd" });
+
+  const { question } = req.body || {};
+  if (!question) return res.status(400).json({ error: "Vraag verplicht" });
+
+  // Diepere context ophalen - parallel voor snelheid
+  const currentYear = new Date().getFullYear();
+  const [yoy, allInvoices, allQuotes, disposable, relations] = await Promise.allSettled([
+    boeksyFetch(`/v1/reports/yoy?year=${currentYear}`),
+    boeksyFetch("/v1/invoices?limit=200"),
+    boeksyFetch("/v1/quotes?limit=200"),
+    boeksyFetch("/v1/dashboard/disposable-income"),
+    boeksyFetch("/v1/relations?limit=200"),
+  ]);
+
+  // Bouw klant-statistieken: per klant totaal gefactureerd en aantal facturen.
+  // Dit helpt Claude bij vragen als "welke klant heeft het hoogste gemiddelde".
+  const klantStats = {};
+  if (allInvoices.status === "fulfilled") {
+    const inv = allInvoices.value.data || [];
+    for (const i of inv) {
+      const klant = i.relation?.name || i.relation_name || "onbekend";
+      if (!klantStats[klant]) klantStats[klant] = { aantal: 0, totaal: 0, statussen: {} };
+      klantStats[klant].aantal++;
+      klantStats[klant].totaal += Number(i.total || i.total_amount || 0);
+      const st = (i.status || "onbekend").toLowerCase();
+      klantStats[klant].statussen[st] = (klantStats[klant].statussen[st] || 0) + 1;
+    }
+  }
+  // Top 10 klanten op omzet
+  const topKlanten = Object.entries(klantStats)
+    .sort((a, b) => b[1].totaal - a[1].totaal)
+    .slice(0, 10)
+    .map(([naam, s]) => ({
+      naam,
+      facturen: s.aantal,
+      totaalOmzet: Math.round(s.totaal * 100) / 100,
+      gemiddeldeFactuur: Math.round((s.totaal / s.aantal) * 100) / 100,
+    }));
+
+  // Disposable income kerncijfers
+  let financieel = {};
+  if (disposable.status === "fulfilled") {
+    const d = disposable.value.data || disposable.value;
+    financieel = {
+      bankSaldo: d.bank_total,
+      btwReservering: d.vat_reserve,
+      ibReservering: d.ib_reserve,
+      besteedbaar: d.disposable,
+      realizedProfit: d.realized_profit,
+      ontvangenOmzetExBtw: d.received_revenue_excl_vat,
+      betaaldeKostenExBtw: d.paid_costs_excl_vat,
+      vatPeriod: d.vat_period,
+      ytdPeriod: d.ytd_period,
+    };
+  }
+
+  // Jaar-op-jaar
+  let yoyData = null;
+  if (yoy.status === "fulfilled") {
+    const y = yoy.value.data || yoy.value;
+    yoyData = {
+      huidigJaar: y.current,
+      vorigJaar: y.previous,
+    };
+  }
+
+  // Offertes summary
+  let offerteSummary = null;
+  if (allQuotes.status === "fulfilled") {
+    const q = allQuotes.value.data || [];
+    const statussen = {};
+    let totaalWaarde = 0;
+    for (const o of q) {
+      const st = (o.status || "onbekend").toLowerCase();
+      statussen[st] = (statussen[st] || 0) + 1;
+      if (["concept", "verzonden", "sent", "open"].includes(st)) {
+        totaalWaarde += Number(o.total || o.total_amount || 0);
+      }
+    }
+    offerteSummary = { totaalAantal: q.length, perStatus: statussen, totaalWaardeLopend: Math.round(totaalWaarde * 100) / 100 };
+  }
+
+  // Bouw de prompt
+  const context = {
+    financieel,
+    yoy: yoyData,
+    topKlantenOpOmzet: topKlanten,
+    offertes: offerteSummary,
+    aantalRelaties: relations.status === "fulfilled" ? (relations.value.data || []).length : null,
+  };
+
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  const claude = new Anthropic({ apiKey });
+
+  const prompt = `Je bent de financiële analist van JnA Events. De eigenaar Jordi heeft een vraag over zijn bedrijfsfinanciën. Gebruik UITSLUITEND de data hieronder.
+
+VRAAG: ${question}
+
+DATA (uit Boeksy):
+${JSON.stringify(context, null, 2)}
+
+INSTRUCTIES:
+- Antwoord in spreektaal, geen markdown, geen sterretjes, geen bullet points.
+- Eerst direct het antwoord, dan max 2 zinnen toelichting.
+- Cijfers in euro's met 2 decimalen waar relevant.
+- Gebruik klantnamen als de vraag over klanten gaat.
+- Als de data ontbreekt voor de vraag: zeg dat eerlijk en geef aan welke endpoint of data nodig is.
+- Geen schattingen verzinnen - alleen wat aantoonbaar is uit deze data.`;
+
+  try {
+    const response = await claude.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 800,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const text = response.content.map((c) => (c.type === "text" ? c.text : "")).join("").trim();
+    return res.status(200).json({ answer: text, context });
+  } catch (err) {
+    return res.status(500).json({ error: "Financial agent fout: " + err.message });
+  }
+}
+
+
 
 export default async function handler(req, res) {
   const auth = req.headers.authorization || "";
@@ -789,10 +925,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Onbekende GET-action" });
     }
 
-    // POST-acties (schrijven)
+    // POST-acties (schrijven of analyseren)
     if (req.method === "POST") {
       if (action === "create-quote") return await handleCreateQuote(req, res);
       if (action === "create-invoice") return await handleCreateInvoice(req, res);
+      if (action === "financial-query") return await handleFinancialQuery(req, res);
       return res.status(400).json({ error: "Onbekende POST-action" });
     }
 

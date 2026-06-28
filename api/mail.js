@@ -362,27 +362,70 @@ async function handleDraftReply(req, res) {
     if (tone) toneSnippet = `\n\nJnA TONE-OF-VOICE (uit eigen instellingen): ${tone.value}`;
   } catch { /* */ }
 
+  // CATEGORIE-SPECIFIEKE STIJL.
+  // De classify-stap heeft eerder bepaald in welke categorie deze mail valt.
+  // We halen die uit Redis-cache zodat de draft een passende toon krijgt.
+  let categorie = "overig";
+  let intent = "vraag";
+  try {
+    const classifications = (await readData("mail_classifications")) || {};
+    const cls = classifications[mailId];
+    if (cls) {
+      categorie = cls.category || "overig";
+      intent = cls.intent || "vraag";
+    }
+  } catch { /* niet fataal */ }
+
+  // Per categorie een specifieke stijl-instructie.
+  // Lead = enthousiast en vraagt door. Klant = persoonlijk met geschiedenis.
+  // Leverancier = zakelijk en kort. Klacht = de-escalatie. Urgent = direct.
+  const stijlPerCategorie = {
+    lead: `STIJL: enthousiast en uitnodigend. Dit is een potentiële nieuwe klant - bedank ze voor de aanvraag, toon interesse in hun event. Vraag door naar datum, locatie, type event, geschatte aantal gasten. Sluit af met een suggestie voor een kort kennismakingsgesprek of het opstellen van een passende offerte.`,
+    klant: `STIJL: warm en persoonlijk - dit is een bekende klant. Verwijs naar de klantgeschiedenis als die er is (eerder gefactureerd, lopende offertes). Hou het gemakkelijk en informeel, alsof je elkaar al kent.`,
+    leverancier: `STIJL: zakelijk, kort en functioneel. Geen smalltalk - meteen ter zake. Bedank kort, behandel het punt, sluit af.`,
+    urgent: `STIJL: direct en duidelijk - dit is urgent. Geen omhaal, geen langdradigheid. Erken urgentie, geef concrete actie of antwoord. Korte zinnen.`,
+    overig: `STIJL: spreektaal, persoonlijk, warm maar professioneel.`,
+    spam: `STIJL: dit is mogelijk spam. Schrijf alleen een kort beleefd antwoord als de inhoud legitiem lijkt. Anders adviseer GEEN reactie te sturen.`,
+  };
+
+  // Intent-specifieke aanvullingen
+  const intentInstructies = {
+    "offerte-verzoek": `Vraag specifiek door naar: gewenste datum, locatie, type event (bruiloft/bedrijfsfeest/verjaardag/etc.), geschatte aantal gasten, eventuele specifieke wensen voor muziek of licht. GEEN prijzen noemen - die volgen in een formele offerte via Boeksy.`,
+    "klacht": `Erken het probleem direct in de eerste zin zonder excuses te bagatelliseren. Toon begrip. Bied een concrete oplossing of vervolgstap. Vermijd defensieve taal. Niet "ja maar" - wel "dat had niet mogen gebeuren, ik ga dit oplossen door...".`,
+    "follow-up-nodig": `Dit is een follow-up situatie. Schrijf een nette, niet-opdringerige check-in die de klant uitnodigt om verder te gaan zonder druk te leggen.`,
+    "vraag": `Beantwoord de vraag concreet. Als je het antwoord niet kunt geven, zeg dat eerlijk en bied aan om het uit te zoeken.`,
+    "informatie": `De klant deelt informatie en verwacht waarschijnlijk een korte bevestiging. Bevestig dat je het hebt ontvangen en verwerkt.`,
+    "geen-actie": `Deze mail vereist geen reactie. Schrijf alleen een concept als de gebruiker er expliciet om vraagt - anders kun je beter een leeg antwoord teruggeven.`,
+  };
+
+  const stijl = stijlPerCategorie[categorie] || stijlPerCategorie.overig;
+  const intentExtra = intentInstructies[intent] || "";
+
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const claude = new Anthropic({ apiKey });
 
   const prompt = `Schrijf een conceptantwoord op deze e-mail voor JnA Events (DJ-bedrijf in Tilburg, eigenaar Jordi).
 
-STIJL: spreektaal, persoonlijk, warm maar professioneel. Geen "geachte heer/mevrouw". Beginnen met "Hoi [voornaam]" of "Hi [voornaam]" als de naam bekend is. Geen overdreven marketingtaal.${toneSnippet}
+CATEGORIE: ${categorie}. INTENT: ${intent}.
 
-LENGTE: kort, 4-6 zinnen. Direct ter zake.
+${stijl}
 
-ALS er om een offerte gevraagd wordt: geef geen prijzen, vraag liever om datum, locatie, geschatte aantal gasten zodat er een passende offerte gemaakt kan worden.
+${intentExtra}
+
+ALGEMENE REGELS: spreektaal, geen "geachte heer/mevrouw", begin met "Hoi [voornaam]" of "Hi [voornaam]" als de naam bekend is. Geen overdreven marketingtaal. Geen markdown of sterretjes.${toneSnippet}
+
+LENGTE: 4-6 zinnen voor reguliere mails, 2-3 voor urgent of leverancier.
 
 INKOMENDE MAIL:
 Van: ${mail.fromName || mail.from} <${mail.from}>
 Onderwerp: ${mail.subject}
 Bericht: ${mail.body || mail.snippet || "(leeg)"}${boeksyContext}
 
-Lever terug:
-- Onderwerp: ...
-- Bericht: ...
+Lever terug in dit exacte formaat:
+Onderwerp: [onderwerp hier]
+Bericht: [bericht hier]
 
-GEEN markdown, geen sterretjes. Sluit af met "Groet, Jordi".`;
+Sluit het bericht af met "Groet, Jordi".`;
 
   try {
     const response = await claude.messages.create({
