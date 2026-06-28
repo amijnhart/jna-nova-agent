@@ -50,6 +50,7 @@ function parseReply(raw) {
   let voice = null;
   let quote = null; // {relation, subject, eventDate, lines: [{description, quantity, unit_price, vat_rate}]}
   let sendMail = null; // {to, subject, body}
+  let financialQuery = null; // string: vraag om door financial-agent te laten beantwoorden
   const kept = [];
   for (const line of lines) {
     const a = line.match(/^\s*ACTIES\s*:\s*(.+)$/i);
@@ -61,6 +62,7 @@ function parseReply(raw) {
     const st = line.match(/^\s*STEM\s*:\s*(.+)$/i);
     const oq = line.match(/^\s*OFFERTE\s*:\s*(.+)$/i);
     const sm = line.match(/^\s*SEND_MAIL\s*:\s*(.+)$/i);
+    const fq = line.match(/^\s*FINANCIAL_QUERY\s*:\s*(.+)$/i);
     if (a) {
       actions = a[1].split("|").map((s) => s.trim()).filter(Boolean).slice(0, 4);
     } else if (t) {
@@ -110,6 +112,9 @@ function parseReply(raw) {
           body: parts.slice(2).join(" | "),
         };
       }
+    } else if (fq) {
+      // FINANCIAL_QUERY: diepere financiele vraag - wordt naar financial-agent gerouteerd
+      financialQuery = fq[1].trim();
     } else if (st) {
       const cmd = st[1].trim().toLowerCase();
       if (/^rate\s*=/.test(cmd)) {
@@ -124,7 +129,7 @@ function parseReply(raw) {
       kept.push(line);
     }
   }
-  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post, voice, quote, sendMail };
+  return { reply: kept.join("\n").trim(), actions, task, improve, plan, whatsapp, post, voice, quote, sendMail, financialQuery };
 }
 
 // Bereken aankomende events uit Boeksy-data. Een event is een offerte of factuur
@@ -2589,7 +2594,7 @@ function Nova({ token, onLogout }) {
     setMessages(next); setInput(""); setBusy(true); setActions([]); setStatus("NOVA denkt na...");
     try {
       const raw = await callBackend(next.map((m) => ({ role: m.role, content: m.content })));
-      const { reply, actions: acts, task, improve, plan, whatsapp, post, voice, quote, sendMail } = parseReply(raw);
+      const { reply, actions: acts, task, improve, plan, whatsapp, post, voice, quote, sendMail, financialQuery } = parseReply(raw);
       const finalReply = reply || "Sorry, ik kon even niet reageren.";
       setMessages((p) => [...p, { role: "assistant", content: finalReply }]);
       setStatus("Online · klaar voor je opdracht");
@@ -2607,6 +2612,31 @@ function Nova({ token, onLogout }) {
       if (sendMail) setPendingMail(sendMail);
       if (post) startPostWorkflow(post);
       if (quote) setPendingQuote(quote);
+      if (financialQuery) {
+        // Routeer naar financial-agent voor diepere analyse.
+        // Resultaat verschijnt als een tweede assistant-bericht in chat.
+        (async () => {
+          setStatus("Financial agent denkt na...");
+          try {
+            const r = await fetch("/api/boeksy?action=financial-query", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+              body: JSON.stringify({ question: financialQuery }),
+            });
+            const d = await r.json();
+            if (r.ok && d.answer) {
+              setMessages((m) => [...m, { role: "assistant", content: d.answer }]);
+              speak(d.answer);
+            } else {
+              setMessages((m) => [...m, { role: "assistant", content: "Financial agent kon dat niet bepalen: " + (d.error || "onbekende fout") }]);
+            }
+            setStatus("Online · klaar voor je opdracht");
+          } catch (e) {
+            setMessages((m) => [...m, { role: "assistant", content: "Verbindingsfout naar financial agent: " + e.message }]);
+            setStatus("Online · klaar voor je opdracht");
+          }
+        })();
+      }
       if (acts.length) setTimeout(() => placeActions(acts), 400);
     } catch (err) {
       setMessages((p) => [...p, { role: "assistant", content: "Er ging iets mis: " + (err.message || "onbekende fout") }]);
