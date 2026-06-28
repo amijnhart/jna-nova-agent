@@ -2605,18 +2605,44 @@ function Nova({ token, onLogout }) {
         if (voice.on === false && voiceOn) { stopSpeaking(); setVoiceOn(false); }
       }
       speak(finalReply);
-      if (task) startTask(task);
+      if (task) {
+        startTask(task);
+        setToast({ icon: "🤝", text: "Doorgezet naar " + task.agent + "-agent", color: CYAN });
+        setTimeout(() => setToast(null), 2500);
+      }
       if (improve) addImprovement(improve);
-      if (plan) addToCalendar(plan);
-      if (whatsapp) setPendingWA(whatsapp);
-      if (sendMail) setPendingMail(sendMail);
-      if (post) startPostWorkflow(post);
-      if (quote) setPendingQuote(quote);
+      if (plan) {
+        addToCalendar(plan);
+        setToast({ icon: "📅", text: "Planning-agent ingeschakeld", color: PURPLE });
+        setTimeout(() => setToast(null), 2500);
+      }
+      if (whatsapp) {
+        setPendingWA(whatsapp);
+        setToast({ icon: "💬", text: "Communicatie-agent: WhatsApp", color: "#5DCAA5" });
+        setTimeout(() => setToast(null), 2500);
+      }
+      if (sendMail) {
+        setPendingMail(sendMail);
+        setToast({ icon: "✉️", text: "Communicatie-agent: mail", color: CYAN });
+        setTimeout(() => setToast(null), 2500);
+      }
+      if (post) {
+        startPostWorkflow(post);
+        setToast({ icon: "🎬", text: "Marketing-agent + 3 specialisten", color: PURPLE });
+        setTimeout(() => setToast(null), 2500);
+      }
+      if (quote) {
+        setPendingQuote(quote);
+        setToast({ icon: "📋", text: "Boekhouding-agent: offerte", color: AMBER });
+        setTimeout(() => setToast(null), 2500);
+      }
       if (financialQuery) {
         // Routeer naar financial-agent voor diepere analyse.
         // Resultaat verschijnt als een tweede assistant-bericht in chat.
         (async () => {
           setStatus("Financial agent denkt na...");
+          setToast({ icon: "📊", text: "Boekhouding-agent: analyse", color: "#5DCAA5" });
+          setTimeout(() => setToast(null), 2500);
           try {
             const r = await fetch("/api/boeksy?action=financial-query", {
               method: "POST",
